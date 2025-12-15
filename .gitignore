@@ -1,0 +1,24 @@
+# Build output directories
+Debug/
+Release/
+.venv/
+
+
+# STM32CubeIDE project files
+.cproject
+.project
+.mxproject
+*.launch
+ 
+# IDE settings
+.settings/
+ 
+# Python virtual environment (если находится в проекте STM32)
+# Если у вас .venv находится вне корневой папки проекта STM32,
+# то этот путь можно скорректировать или удалить
+#Core/user_app/.venv/ 
+ 
+# Backup and temporary files
+*.bak
+*~
+*.swp
