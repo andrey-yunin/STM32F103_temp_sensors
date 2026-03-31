@@ -23,12 +23,14 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
-#include "task_can_handler.h"
+#include "app_queues.h"
 #include "app_config.h"
+#include "can_protocol.h"
+#include "task_can_handler.h"
 #include "task_dispatcher.h"
 #include "task_temp_monitor.h"
-#include "app_queues.h"
-#include "command_protocol.h"
+
+
 
 
 /* USER CODE END Includes */
@@ -78,7 +80,8 @@ const osThreadAttr_t task_temp_monit_attributes = {
 
 osMessageQueueId_t can_rx_queueHandle;
 osMessageQueueId_t can_tx_queueHandle;
-osMessageQueueId_t dispatcher_queueHandle;
+osMessageQueueId_t parser_queueHandle;
+
 
 /* USER CODE END PV */
 
@@ -135,10 +138,10 @@ int main(void)
   // Создание очередей FreeRTOS с использованием именованных констант
 can_rx_queueHandle = osMessageQueueNew(CAN_RX_QUEUE_LEN, sizeof(CanRxFrame_t), NULL); // CAN-фрейм: на прием
 can_tx_queueHandle = osMessageQueueNew(CAN_TX_QUEUE_LEN, sizeof(CanTxFrame_t), NULL); // CAN-фрейм на отправку
-dispatcher_queueHandle = osMessageQueueNew(DISPATCHER_QUEUE_LEN, sizeof(CAN_Command_t), NULL); // Структура команды
+parser_queueHandle = osMessageQueueNew(DISPATCHER_QUEUE_LEN, sizeof(ParsedCanCommand_t), NULL); // Структура команды
 
 // Проверка успешности создания очередей
-if (can_rx_queueHandle == NULL || dispatcher_queueHandle == NULL || can_tx_queueHandle == NULL) {
+if (can_rx_queueHandle == NULL || parser_queueHandle == NULL || can_tx_queueHandle == NULL) {
 	Error_Handler();
     }
 

@@ -2,7 +2,7 @@
 Debug/
 Release/
 .venv/
-
+STM32F103_step_motors_refactored/
 
 # STM32CubeIDE project files
 .cproject

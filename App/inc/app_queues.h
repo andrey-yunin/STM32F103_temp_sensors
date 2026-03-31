@@ -8,12 +8,20 @@
 #ifndef APP_QUEUES_H_
 #define APP_QUEUES_H_
 
-#include "cmsis_os.h" // Для osMessageQueueId_t
+#include "cmsis_os.h"
+#include "app_config.h"
+#include "can_protocol.h"
 
-// Глобальные хэндлы для всех очередей FreeRTOS
-extern osMessageQueueId_t can_rx_queueHandle;      // Для приема сырых CAN-фреймов (ISR -> CAN Handler)
-extern osMessageQueueId_t can_tx_queueHandle;      // Для отправки CAN-сообщений (любая задача -> CAN Handler)
-extern osMessageQueueId_t dispatcher_queueHandle;      // Для передачи CAN-фреймов (CAN Handler -> Command Parser)
+// --- Хэндлы очередей (будут созданы в main.c) ---
+
+// Очередь для приема сырых CAN-фреймов (CanRxFrame_t)
+extern osMessageQueueId_t can_rx_queueHandle;
+
+// Очередь для отправки сырых CAN-фреймов (CanTxFrame_t)
+extern osMessageQueueId_t can_tx_queueHandle;
+
+// Очередь для передачи распарсенных команд (ParsedCanCommand_t)
+extern osMessageQueueId_t parser_queueHandle;
 
 
 #endif /* APP_QUEUES_H_ */

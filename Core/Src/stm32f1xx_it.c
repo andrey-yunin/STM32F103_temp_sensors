@@ -51,6 +51,9 @@
 /* USER CODE BEGIN PV */
 
 extern TIM_HandleTypeDef htim2;
+extern osThreadId_t task_can_handleHandle;
+extern osMessageQueueId_t can_rx_queueHandle;
+
 
 /* USER CODE END PV */
 
@@ -193,6 +196,7 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 		{
 		// Помещаем весь фрейм в очередь can_rx_queue для обработки
 		osMessageQueuePut(can_rx_queueHandle, &rx_frame, 0, 0); // priority 0, timeout 0 (немедленно)
+		osThreadFlagsSet(task_can_handleHandle, FLAG_CAN_RX); // Уведомляем CAN Handler о новом фрейме
 		}
 }
 
