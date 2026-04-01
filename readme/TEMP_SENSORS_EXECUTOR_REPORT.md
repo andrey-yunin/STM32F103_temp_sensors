@@ -73,19 +73,37 @@ This phase focuses on upgrading the communication layer to professional industri
 ## 5. Phase 5: Industrial 1-Wire & DS18B20 Management
 
 This phase focuses on the reliability and precision of the temperature sensing layer on a shared 1-Wire bus.
+## 5. Phase 5: Industrial 1-Wire & DS18B20 Management
 
-### 5.1. Low-Level Driver Enhancement (1-Wire)
-- [ ] Implement precise microsecond delays using hardware timer (TIM3).
-- [ ] Implement the full **Search ROM algorithm** to discover all sensors on the bus.
-- [ ] Implement **CRC8 validation** for all data received from sensors (Scratcpad).
-- [ ] Add bus health monitoring (Short circuit / Open circuit detection).
+### 5.1. Low-Level Driver Enhancement (Phase 5.1) - Согласовано
+- [x] **Direct Register Access (DRA):** Полный отказ от `HAL_GPIO_Init` в рабочих циклах. Использование регистров `BSRR/BRR` (запись) и `IDR` (чтение) для STM32F103. Пин зафиксирован в режиме `Open-Drain`.
+- [x] **Search ROM Algorithm:** Реализация полноценного алгоритма поиска (переписи) всех 64-битных адресов датчиков на шине.
+- [x] **Match ROM Protocol:** Переход на адресный опрос датчиков по их уникальным ID (исключение коллизий на общей шине).
 
-### 4.2. Sensor Management Logic (Task Temp Monitor)
-- [ ] Implement ROM-to-ID mapping: Assign unique ROM codes to logical sensor indices (0-7).
-- [ ] Implement a **Non-blocking State Machine** for polling:
-    - `STATE_IDLE` -> `STATE_CONVERTING` (Wait 750ms) -> `STATE_READING` -> `STATE_SUCCESS/ERROR`.
-- [ ] Implement 12-bit resolution configuration for all sensors.
-- [ ] Add digital filtering/averaging for noisy environments.
+### 5.2. Sensor Management Logic (Task Temp Monitor) - Согласовано
+- [x] **Parallel Polling (Broadcast):** Все датчики запускают измерение одновременно командой `SKIP_ROM` + `0x44`.
+- [x] **Non-blocking Delay:** Ожидание готовности (750мс) реализовано через `osDelay`, не блокируя другие задачи.
+- [x] **Mapping-based Polling:** Задача опрашивает только привязанные ROM ID из таблицы конфигурации (подготовлено).
+
+---
+
+## 6. Phase 6: Service Layer & Persistent Storage (Industrial Mapping)
+
+Данная фаза внедряет промышленный стандарт обслуживания "в поле" без необходимости перепрошивки Дирижера.
+
+### 6.1. Persistent Storage (Internal Flash) - Согласовано
+- [ ] **Flash Driver (`app_flash`):** Реализация записи/чтения в последнюю страницу Flash (Page 63 - 0x0800FC00).
+- [ ] **Config Structure:** Хранение `MagicKey`, `PerformerID`, `Mapping Table` (8x ROM ID) и `CRC16`.
+- [ ] **Factory State Handling:** Автоматическая инициализация настроек по умолчанию при первом запуске.
+
+### 6.2. Service Protocol (0xFxxx Range) - Согласовано
+- [ ] **Universal Commands (0xF0xx):** `SRV_GET_INFO`, `SRV_REBOOT`, `SRV_FLASH_COMMIT`.
+- [ ] **Thermo-specific Commands (0xF1xx):** `SRV_SCAN_1WIRE`, `SRV_GET_PHYS_ID`, `SRV_SET_CHANNEL_MAP`.
+- [ ] **Mapping Workflow:** Реализация процедуры "Теплого пальца" (Discovery -> Identification -> Mapping -> Commit).
+
+### 6.3. System Integration
+- [ ] **Dispatcher Update:** Обработка сервисных команд и отправка DATA-ответов с результатами сканирования.
+- [ ] **Task Update:** Синхронизация `task_temp_monitor` с актуальной таблицей маппинга в RAM.
 
 ### 5.3. Error Handling & Diagnostics
 - [ ] Implement `SENSOR_OFFLINE` status reporting via CAN.
