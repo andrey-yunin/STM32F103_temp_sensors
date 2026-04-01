@@ -17,6 +17,7 @@
 #include "app_queues.h"     // Для хэндлов очередей
 #include "app_config.h"     // Для CanRxFrame_t, CanTxFrame_t, CAN_DATA_MAX_LEN
 #include "can_protocol.h"
+#include "app_flash.h"
 
 // --- Внешние хэндлы HAL ---
 extern CAN_HandleTypeDef hcan; // Хэндл CAN-периферии из main.c
@@ -29,7 +30,7 @@ extern osThreadId_t task_can_handleHandle;
 
 void CAN_SendAck(uint16_t cmd_code) {
 	CanTxFrame_t tx;
-    tx.header.ExtId = CAN_BUILD_ID(CAN_PRIORITY_NORMAL, CAN_MSG_TYPE_ACK, CAN_ADDR_CONDUCTOR, CAN_ADDR_THERMO_BOARD);
+    tx.header.ExtId = CAN_BUILD_ID(CAN_PRIORITY_NORMAL, CAN_MSG_TYPE_ACK, CAN_ADDR_CONDUCTOR, AppConfig_GetPerformerID());
     tx.header.IDE = CAN_ID_EXT;
     tx.header.RTR = CAN_RTR_DATA;
     tx.header.DLC = 2;
@@ -42,7 +43,7 @@ void CAN_SendAck(uint16_t cmd_code) {
 
 void CAN_SendNack(uint16_t cmd_code, uint16_t error_code) {
 	CanTxFrame_t tx;
-	tx.header.ExtId = CAN_BUILD_ID(CAN_PRIORITY_NORMAL, CAN_MSG_TYPE_NACK, CAN_ADDR_CONDUCTOR, CAN_ADDR_THERMO_BOARD);
+	tx.header.ExtId = CAN_BUILD_ID(CAN_PRIORITY_NORMAL, CAN_MSG_TYPE_NACK, CAN_ADDR_CONDUCTOR, AppConfig_GetPerformerID());
     tx.header.IDE = CAN_ID_EXT;
     tx.header.RTR = CAN_RTR_DATA;
     tx.header.DLC = 4;
@@ -57,7 +58,7 @@ void CAN_SendNack(uint16_t cmd_code, uint16_t error_code) {
 
 void CAN_SendDone(uint16_t cmd_code, uint8_t sensor_id) {
 	CanTxFrame_t tx;
-    tx.header.ExtId = CAN_BUILD_ID(CAN_PRIORITY_NORMAL, CAN_MSG_TYPE_DATA_DONE_LOG, CAN_ADDR_CONDUCTOR, CAN_ADDR_THERMO_BOARD);
+    tx.header.ExtId = CAN_BUILD_ID(CAN_PRIORITY_NORMAL, CAN_MSG_TYPE_DATA_DONE_LOG, CAN_ADDR_CONDUCTOR, AppConfig_GetPerformerID());
     tx.header.IDE = CAN_ID_EXT;
     tx.header.RTR = CAN_RTR_DATA;
     tx.header.DLC = 4;
@@ -72,7 +73,7 @@ void CAN_SendDone(uint16_t cmd_code, uint8_t sensor_id) {
 
 void CAN_SendData(uint16_t cmd_code, uint8_t *data, uint8_t len) {
 	CanTxFrame_t tx;
-    tx.header.ExtId = CAN_BUILD_ID(CAN_PRIORITY_NORMAL, CAN_MSG_TYPE_DATA_DONE_LOG, CAN_ADDR_CONDUCTOR, CAN_ADDR_THERMO_BOARD);
+    tx.header.ExtId = CAN_BUILD_ID(CAN_PRIORITY_NORMAL, CAN_MSG_TYPE_DATA_DONE_LOG, CAN_ADDR_CONDUCTOR, AppConfig_GetPerformerID());
     tx.header.IDE = CAN_ID_EXT;
     tx.header.RTR = CAN_RTR_DATA;
     tx.header.DLC = (len > 6) ? 8 : (len + 2);
@@ -102,7 +103,7 @@ void app_start_task_can_handler(void *argument) {
     // --- Настройка CAN-фильтра (bxCAN Hardware Filter) ---
     // Фильтруем по DstAddr = CAN_ADDR_THERMO_BOARD (0x40)
     CAN_FilterTypeDef sFilterConfig;
-    uint32_t filter_id   = ((uint32_t)CAN_ADDR_THERMO_BOARD << 16) << 3 | CAN_ID_EXT;
+    uint32_t filter_id   = ((uint32_t)AppConfig_GetPerformerID() << 16) << 3 | CAN_ID_EXT;
     uint32_t filter_mask = ((uint32_t)0xFF << 16) << 3 | CAN_ID_EXT;
 
     sFilterConfig.FilterBank = 0;

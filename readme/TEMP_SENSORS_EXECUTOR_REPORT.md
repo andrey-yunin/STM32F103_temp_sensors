@@ -48,24 +48,24 @@ This document summarizes the development process for the new Temperature Sensors
 This phase focuses on upgrading the communication layer to professional industrial standards (Advanced Level) by adopting the architecture from the `step_motors_refactored` project.
 
 ### 4.1. Infrastructure & Protocol Layer (Step 1)
-- [ ] Create `App/inc/can_protocol.h` following the benchmark structure (29-bit Extended ID).
-- [ ] Define standardized command codes: `0x9011` (SENSOR_GET_TEMP) and `0x9010` (SENSOR_GET_ALL_TEMPS).
-- [ ] Update `App/inc/app_queues.h`: Implement `can_rx_queue`, `can_tx_queue`, and `parser_queue` with proper typing.
-- [ ] Define Event-Driven flags (`FLAG_CAN_RX`, `FLAG_CAN_TX`) in `app_config.h`.
+- [x] Create `App/inc/can_protocol.h` following the benchmark structure (29-bit Extended ID).
+- [x] Define standardized command codes: `0x9011` (SENSOR_GET_TEMP) and `0x9010` (SENSOR_GET_ALL_TEMPS).
+- [x] Update `App/inc/app_queues.h`: Implement `can_rx_queue`, `can_tx_queue`, and `parser_queue` with proper typing.
+- [x] Define Event-Driven flags (`FLAG_CAN_RX`, `FLAG_CAN_TX`) in `app_config.h`.
 
 ### 4.2. Transport Layer - CAN Handler (Step 2)
-- [ ] Refactor `App/src/tasks/task_can_handler.c` to use `osThreadFlagsWait` (Event-Driven).
-- [ ] Implement hardware filtering for `CAN_ADDR_THERMO_BOARD` (0x40).
-- [ ] Implement standardized response helpers (`CAN_SendAck`, `CAN_SendNack`, `CAN_SendData`, `CAN_SendDone`).
+- [x] Refactor `App/src/tasks/task_can_handler.c` to use `osThreadFlagsWait` (Event-Driven).
+- [x] Implement hardware filtering for `CAN_ADDR_THERMO_BOARD` (динамический ID через AppConfig).
+- [x] Implement standardized response helpers (`CAN_SendAck`, `CAN_SendNack`, `CAN_SendData`, `CAN_SendDone`).
 
 ### 4.3. Application Logic - Dispatcher/Parser (Step 3)
-- [ ] Refactor `App/src/tasks/task_dispatcher.c` to align with the benchmark's `task_command_parser.c`.
-- [ ] Implement full transaction lifecycle (ACK -> DATA -> DONE) for sensor commands.
-- [ ] Implement conversion logic for temperature data (`float` to `int16_t` 0.1°C resolution).
+- [x] Refactor `App/src/tasks/task_dispatcher.c` to align with the benchmark's `task_command_parser.c`.
+- [x] Implement full transaction lifecycle (ACK -> DATA -> DONE) for sensor commands.
+- [x] Implement conversion logic for temperature data (`float` to `int16_t` 0.1°C resolution).
 
 ### 4.4. System Robustness & Standards
-- [ ] Implement error handling for invalid sensor IDs (`CAN_ERR_INVALID_SENSOR_ID`).
-- [ ] Verify thread-safe data access between polling and communication tasks.
+- [x] Implement error handling for invalid sensor IDs (`CAN_ERR_INVALID_SENSOR_ID`).
+- [x] Verify thread-safe data access between polling and communication tasks.
 - [x] Perform a final code audit against the industrial benchmark.
 
 ---
@@ -92,9 +92,10 @@ This phase focuses on the reliability and precision of the temperature sensing l
 Данная фаза внедряет промышленный стандарт обслуживания "в поле" без необходимости перепрошивки Дирижера.
 
 ### 6.1. Persistent Storage (Internal Flash) - Согласовано
-- [ ] **Flash Driver (`app_flash`):** Реализация записи/чтения в последнюю страницу Flash (Page 63 - 0x0800FC00).
-- [ ] **Config Structure:** Хранение `MagicKey`, `PerformerID`, `Mapping Table` (8x ROM ID) и `CRC16`.
-- [ ] **Factory State Handling:** Автоматическая инициализация настроек по умолчанию при первом запуске.
+- [x] **Flash Driver (`app_flash`):** Реализация записи/чтения в последнюю страницу Flash (Page 63 - 0x0800FC00).
+- [x] **Config Structure:** Хранение `MagicKey`, `PerformerID`, `Mapping Table` (8x ROM ID) и `CRC16`.
+- [x] **Mutex Protection:** Внедрение `osMutex` для безопасного доступа к `g_app_config` из разных потоков (Dispatcher vs Monitor).
+- [x] **Factory State Handling:** Автоматическая инициализация настроек по умолчанию при первом запуске.
 
 ### 6.2. Service Protocol (0xFxxx Range) - Согласовано
 - [ ] **Universal Commands (0xF0xx):** `SRV_GET_INFO`, `SRV_REBOOT`, `SRV_FLASH_COMMIT`.
@@ -104,6 +105,12 @@ This phase focuses on the reliability and precision of the temperature sensing l
 ### 6.3. System Integration
 - [ ] **Dispatcher Update:** Обработка сервисных команд и отправка DATA-ответов с результатами сканирования.
 - [ ] **Task Update:** Синхронизация `task_temp_monitor` с актуальной таблицей маппинга в RAM.
+
+### 6.4. Refactoring: Encapsulation & Thread Safety (Advanced Level) - Согласовано
+- [x] **Data Hiding:** Перевод всех `extern` переменных (`g_latest_temperatures`, `g_app_config`, `g_performer_id`) в статус `static` внутри соответствующих модулей.
+- [x] **Thread-Safe Accessors:** Реализация функций-аксессоров (Getters/Setters) для безопасного межзадачного обмена данными.
+- [x] **Mutex Integration:** Использование `osMutex` внутри функций доступа для исключения Race Conditions при обращении к 64-битным ROM ID и массивам данных.
+- [x] **Cleanup:** Удаление или минимизация файла `app_globals.h` как устаревшего архитектурного решения.
 
 ### 5.3. Error Handling & Diagnostics
 - [ ] Implement `SENSOR_OFFLINE` status reporting via CAN.
@@ -131,8 +138,9 @@ Following a deep code review of `ds18b20.c`, the following findings were recorde
 
 - **Status:** 
     - [x] Phase 4 (Industrial CAN Refactoring) is **100% Completed**. Project compiles and follows DDS-240 standards.
-    - [ ] Phase 5 (Industrial 1-Wire) is in **Research/Audit** stage.
-- **Next Action (Tomorrow):** Start Phase 5.1 (GPIO optimization) and Phase 5.2 (Search ROM algorithm implementation).
+    - [x] Phase 6.4 (Advanced Encapsulation) is **100% Completed**. Global variables removed.
+    - [x] Phase 5.1 & 5.2 (1-Wire Implementation) is **100% Completed**. Sensors polled correctly via Match ROM.
+- **Next Action (Tomorrow):** Start Phase 6.2 (Service Layer) and 6.3 (System Integration) for remote sensor mapping.
 
 
 ### 5.1. Protocol Compliance Validation

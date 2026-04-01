@@ -26,7 +26,7 @@
 #include "cmsis_os.h"
 #include "app_queues.h" // Для can_rx_queueHandle
 #include "app_config.h" // Чтобы видеть CanFrame_t
-#include "app_globals.h"
+
 
 
 

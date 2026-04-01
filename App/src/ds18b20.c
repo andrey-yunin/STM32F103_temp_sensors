@@ -9,7 +9,7 @@
 #include "ds18b20.h"
 #include "main.h"
 #include "app_config.h"
-#include "app_globals.h"
+
 
 // --- Команды DS18B20 ---
 #define DS18B20_CMD_SEARCHROM     0xF0
