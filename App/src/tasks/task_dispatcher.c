@@ -132,6 +132,21 @@ void app_start_task_dispatcher(void *argument)
 	    	    break;
 	    	    }
 
+	    	case CAN_CMD_SRV_SET_NODE_ID: {
+	    		// Изменение сетевого адреса (Node ID)
+	    		if (parsed.sensor_id >= 0x02 && parsed.sensor_id <= 0x7F && parsed.sensor_id != 0x10) {
+	    			AppConfig_SetPerformerID(parsed.sensor_id);
+	    			// Важно: чтобы фильтр CAN обновился, после этой команды
+	    			// инженер должен отправить SRV_REBOOT или мы обновим его сами
+	    			CAN_SendDone(parsed.cmd_code, parsed.sensor_id);
+	    			}
+	    		else
+	    			{
+	    			CAN_SendNack(parsed.cmd_code, 0x0002);
+	    			}
+	    		break;
+	    		}
+
 	    	case CAN_CMD_SRV_FLASH_COMMIT: {
 	    		if (AppConfig_Commit()) {
 	    			CAN_SendDone(parsed.cmd_code, 0);
@@ -141,6 +156,31 @@ void app_start_task_dispatcher(void *argument)
 	    			}
 	    		break;
 	    		}
+
+	    	case CAN_CMD_SRV_FACTORY_RESET: {
+	    		// Полная очистка Flash (приведет к сбросу на 0x40 при перезагрузке)
+	    		uint16_t key = (uint16_t)(parsed.data[0] | (parsed.data[1] << 8));
+	    		if (key == SRV_MAGIC_FACTORY_RESET) {
+	    			// Здесь можно вызвать функцию очистки или просто испортить MagicKey во Flash
+	    			// Для простоты: стираем Flash и перезагружаемся
+	    			HAL_FLASH_Unlock();
+	    			FLASH_EraseInitTypeDef EraseInitStruct;
+	    			uint32_t PageError = 0;
+	    			EraseInitStruct.TypeErase = FLASH_TYPEERASE_PAGES;
+	    			EraseInitStruct.PageAddress = APP_CONFIG_FLASH_ADDR;
+	    			EraseInitStruct.NbPages = 1;
+	    			HAL_FLASHEx_Erase(&EraseInitStruct, &PageError);
+	    			HAL_FLASH_Lock();
+	    			CAN_SendDone(parsed.cmd_code, 0);
+	    			osDelay(100);
+	    			NVIC_SystemReset();
+	    			}
+	    		else {
+	    			CAN_SendNack(parsed.cmd_code, 0x0001);
+	    			}
+	    		break;
+	    		}
+
 
 	    	// ============================================================
 	    	// СЕРВИСНЫЕ КОМАНДЫ ТЕРМОДАТЧИКОВ (0xF1xx)

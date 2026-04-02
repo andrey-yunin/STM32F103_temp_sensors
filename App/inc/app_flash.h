@@ -52,6 +52,12 @@ void AppConfig_GetSensorROM(uint8_t index, DS18B20_ROM_t *out_rom);
  */
 void AppConfig_SetSensorROM(uint8_t index, DS18B20_ROM_t *in_rom);
 
+
+/**
+ * @brief Безопасная запись CAN ID платы (в RAM).
+ */
+void AppConfig_SetPerformerID(uint32_t id);
+
 /**
  * @brief Чтение текущего CAN ID платы.
  */
