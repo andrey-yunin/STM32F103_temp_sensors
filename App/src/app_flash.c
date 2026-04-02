@@ -25,6 +25,19 @@ const osMutexAttr_t configMutex_attr = {
 
 // --- Внутренние вспомогательные функции ---
 
+
+/**
+ * @brief Чтение 96-битного уникального идентификатора чипа (MCU UID).
+ * @param out_uid Указатель на массив размером 12 байт.
+ */
+void AppConfig_GetMCU_UID(uint8_t* out_uid) {
+	if (out_uid == NULL) return;
+	// Адрес UID для STM32F103 (согласно Reference Manual)
+	uint8_t* uid_base = (uint8_t*)0x1FFFF7E8;
+	memcpy(out_uid, uid_base, 12);
+}
+
+
 /**
  * @brief Расчет контрольной суммы (Checksum).
  */
@@ -36,7 +49,6 @@ static uint16_t CalculateChecksum(AppConfig_t* cfg) {
 		}
 	return checksum;
 }
-
 
 
 // --- Публичный API с защитой Mutex ---
@@ -104,7 +116,6 @@ void AppConfig_SetPerformerID(uint32_t id) {
 		osMutexRelease(configMutex);
 		}
 	}
-
 
 
 /**

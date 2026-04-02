@@ -30,6 +30,12 @@ typedef struct {
 } AppConfig_t;
 
 
+/**
+ * @brief Чтение 96-битного уникального идентификатора чипа (MCU UID).
+ * @param out_uid Указатель на массив размером 12 байт.
+ */
+void AppConfig_GetMCU_UID(uint8_t* out_uid);
+
 
 /**
  * @brief Инициализирует конфигурацию и создает Mutex.

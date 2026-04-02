@@ -85,7 +85,7 @@
 typedef struct {
      uint16_t cmd_code;   // Код команды (Little-Endian)
      uint8_t  sensor_id;  // ID сенсора (параметр)
-     uint8_t  data[5];    // Дополнительные данные (если есть)
+     uint8_t  data[8];    // Дополнительные данные (если есть)
      uint8_t  data_len;
 } ParsedCanCommand_t;
 
@@ -96,5 +96,43 @@ void CAN_SendAck(uint16_t cmd_code);
 void CAN_SendNack(uint16_t cmd_code, uint16_t error_code);
 void CAN_SendDone(uint16_t cmd_code, uint8_t sensor_id);
 void CAN_SendData(uint16_t cmd_code, uint8_t *data, uint8_t len);
+
+
+// ============================================================
+// Типы устройств (Device Type IDs)
+// ============================================================
+#define CAN_DEVICE_TYPE_THERMO      0x40
+#define CAN_DEVICE_TYPE_MOTION      0x20
+#define CAN_DEVICE_TYPE_PUMP        0x30
+
+// ============================================================
+// Универсальные сервисные команды (0xF0xx)
+// ============================================================
+#define CAN_CMD_SRV_GET_DEVICE_INFO  0xF001
+#define CAN_CMD_SRV_REBOOT           0xF002
+#define CAN_CMD_SRV_FLASH_COMMIT     0xF003
+#define CAN_CMD_SRV_FACTORY_RESET    0xF004
+#define CAN_CMD_SRV_SET_NODE_ID      0xF005
+
+// ============================================================
+// Сервисные команды термодатчиков (0xF1xx)
+// ============================================================
+#define CAN_CMD_SRV_SCAN_1WIRE       0xF101
+#define CAN_CMD_SRV_GET_PHYS_ID      0xF102
+#define CAN_CMD_SRV_SET_CHANNEL_MAP  0xF103
+#define CAN_CMD_SRV_GET_CHANNEL_MAP  0xF104
+
+// ============================================================
+// Защитные ключи (Magic Keys)
+// ============================================================
+#define SRV_MAGIC_REBOOT             0xDEAD
+#define SRV_MAGIC_FACTORY_RESET      0xFACE
+
+// ============================================================
+// Версия прошивки (Firmware Version)
+// ============================================================
+#define FW_REV_MAJOR                 1
+#define FW_REV_MINOR                 0
+
 
 #endif /* CAN_PROTOCOL_H_ */

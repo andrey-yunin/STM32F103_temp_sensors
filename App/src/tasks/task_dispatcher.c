@@ -16,10 +16,12 @@
 #include "cmsis_os.h"         // Для osDelay, osMessageQueueXxx
 #include "app_queues.h"       // Для хэндлов очередей
 #include "app_config.h"       // Для MotionCommand_t
+#include "app_flash.h"
 #include "can_protocol.h"
 #include "task_dispatcher.h"
+#include "ds18b20.h"
 #include <string.h>
-
+#include "ds18b20.h"
 
 
 void app_start_task_dispatcher(void *argument)
@@ -84,6 +86,110 @@ void app_start_task_dispatcher(void *argument)
 	    		CAN_SendDone(parsed.cmd_code, 0xFF); // 0xFF - маркер "Все датчики"
 	    		break;
 	    		}
+
+	    	// ============================================================
+	        // УНИВЕРСАЛЬНЫЕ СЕРВИСНЫЕ КОМАНДЫ (0xF0xx)
+	        // ============================================================
+
+	    	case CAN_CMD_SRV_GET_DEVICE_INFO: {
+	    		uint8_t uid[12];
+	    		uint8_t data[8];
+
+	    		AppConfig_GetMCU_UID(uid);
+	    		// Пакет 1: Метаданные + начало UID
+	    	    data[0] = CAN_DEVICE_TYPE_THERMO;
+	    	    data[1] = FW_REV_MAJOR;
+	    	    data[2] = FW_REV_MINOR;
+	    	    data[3] = DS18B20_MAX_SENSORS;
+	    	    data[4] = uid[0];
+	    	    data[5] = uid[1];
+	    	    CAN_SendData(parsed.cmd_code, data, 6);
+
+	    	    // Пакет 2: Середина UID
+	    	    memcpy(data, &uid[2], 6);
+	    	    CAN_SendData(parsed.cmd_code, data, 6);
+
+	    	    // Пакет 3: Конец UID
+	    	    memcpy(data, &uid[8], 4);
+	    	    data[4] = 0; data[5] = 0;
+	    	    CAN_SendData(parsed.cmd_code, data, 6);
+
+	    	    CAN_SendDone(parsed.cmd_code, 0);
+	    	    break;
+	    	    }
+
+	    	case CAN_CMD_SRV_REBOOT: {
+	    		// Извлекаем Magic Key из параметров (байт 0-1 данных в ParsedCanCommand_t)
+	    	    uint16_t key = (uint16_t)(parsed.data[0] | (parsed.data[1] << 8));
+	    	    if (key == SRV_MAGIC_REBOOT) {
+	    	    	CAN_SendDone(parsed.cmd_code, 0);
+	    	    	osDelay(100); // Даем время на отправку CAN фрейма
+	    	    	NVIC_SystemReset();
+	    	    	}
+	    	    else {
+	    	    	CAN_SendNack(parsed.cmd_code, 0x0001); // Ошибка ключа
+	    	    	}
+	    	    break;
+	    	    }
+
+	    	case CAN_CMD_SRV_FLASH_COMMIT: {
+	    		if (AppConfig_Commit()) {
+	    			CAN_SendDone(parsed.cmd_code, 0);
+	    			}
+	    		else {
+	    			CAN_SendNack(parsed.cmd_code, 0x0002); // Ошибка записи Flash
+	    			}
+	    		break;
+	    		}
+
+	    	// ============================================================
+	    	// СЕРВИСНЫЕ КОМАНДЫ ТЕРМОДАТЧИКОВ (0xF1xx)
+	    	// ============================================================
+
+	    	case CAN_CMD_SRV_SCAN_1WIRE: {
+	    		// Принудительный запуск сканирования шины
+	    	    uint8_t count = DS18B20_Init();
+	    	    uint8_t data[1];
+	    	    data[0] = count;
+	    	    CAN_SendData(parsed.cmd_code, data, 1);
+
+	    	    CAN_SendDone(parsed.cmd_code, count);
+	    	    break;
+
+	    	    }
+
+	    	case CAN_CMD_SRV_GET_PHYS_ID: {
+	    		// Запрос 64-битного ID датчика по его порядковому номеру на шине
+	    		DS18B20_ROM_t* rom = DS18B20_GetROM(parsed.sensor_id);
+	    		if (rom != NULL) {
+	    			uint8_t data[9];
+	    			data[0] = parsed.sensor_id;
+	    			memcpy(&data[1], rom->rom_code, 8);
+	    			// Отправляем частями (так как CAN_SendData берет до 6 байт payload)
+	    			CAN_SendData(parsed.cmd_code, data, 6);      // Индекс + 5 байт ROM
+	    			CAN_SendData(parsed.cmd_code, &data[6], 3);  // Оставшиеся 3 байта ROM
+	    			CAN_SendDone(parsed.cmd_code, parsed.sensor_id);
+	    			}
+	    		else {
+	    			CAN_SendNack(parsed.cmd_code, CAN_ERR_INVALID_SENSOR_ID);
+	    			}
+	    		break;
+	    		}
+
+	    	case CAN_CMD_SRV_SET_CHANNEL_MAP: {
+	    		// Привязка ROM ID к логическому каналу (logical_id берем из sensor_id)
+	    	    // Сами 8 байт ROM ID приходят в поле data
+	    		if (parsed.sensor_id < DS18B20_MAX_SENSORS && parsed.data_len >= 8) {
+	    			DS18B20_ROM_t new_rom;
+	    			memcpy(new_rom.rom_code, parsed.data, 8);
+	    			AppConfig_SetSensorROM(parsed.sensor_id, &new_rom);
+	    			CAN_SendDone(parsed.cmd_code, parsed.sensor_id);
+	    			}
+	    		else {
+	    			CAN_SendNack(parsed.cmd_code, CAN_ERR_INVALID_SENSOR_ID);
+	    			}
+	    		break;
+	    	}
 
 	    	default:
 	    		// Неизвестная команда (не реализована в данной прошивке)
