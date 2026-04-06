@@ -68,4 +68,10 @@ uint32_t AppConfig_GetPerformerID(void);
  */
 bool AppConfig_Commit(void);
 
+
+/**
+ * @brief Сброс конфигурации к заводским настройкам (стирание Flash).
+ */
+void AppConfig_FactoryReset(void);
+
 #endif /* APP_FLASH_H_ */

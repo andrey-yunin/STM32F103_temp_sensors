@@ -39,15 +39,25 @@ void AppConfig_GetMCU_UID(uint8_t* out_uid) {
 
 
 /**
- * @brief Расчет контрольной суммы (Checksum).
+ * @brief Расчет контрольной суммы CRC16 (Poly 0xA001, Modbus).
  */
 static uint16_t CalculateChecksum(AppConfig_t* cfg) {
-	uint16_t checksum = 0;
+	uint16_t crc = 0xFFFF;
 	uint8_t* p = (uint8_t*)cfg;
-	for (uint32_t i = 0; i < sizeof(AppConfig_t) - sizeof(cfg->checksum); i++) {
-		checksum += p[i];
+	uint32_t len = sizeof(AppConfig_t) - sizeof(cfg->checksum);
+
+	for (uint32_t i = 0; i < len; i++) {
+		crc ^= p[i];
+		for (int j = 0; j < 8; j++) {
+			if (crc & 0x0001) {
+				crc = (crc >> 1) ^ 0xA001;
+				}
+			else {
+				crc >>= 1;
+				}
+			}
 		}
-	return checksum;
+	return crc;
 }
 
 
@@ -62,7 +72,7 @@ void AppConfig_Init(void) {
 	// 2. Чтение данных из Flash
     AppConfig_t* flash_cfg = (AppConfig_t*)APP_CONFIG_FLASH_ADDR;
 
-    // 3. Валидация
+    // 3. Валидация по Magic Key и CRC16
     if (flash_cfg->magic == APP_CONFIG_MAGIC &&
     		flash_cfg->checksum == CalculateChecksum(flash_cfg))
     	{
@@ -80,6 +90,21 @@ void AppConfig_Init(void) {
     	g_app_config.checksum = CalculateChecksum(&g_app_config);
     	}
     }
+
+
+/**
+ * @brief Сброс конфигурации к заводским настройкам (физическое стирание Flash).
+ */
+void AppConfig_FactoryReset(void) {
+	HAL_FLASH_Unlock();
+	FLASH_EraseInitTypeDef EraseInitStruct;
+	uint32_t PageError = 0;
+	EraseInitStruct.TypeErase = FLASH_TYPEERASE_PAGES;
+	EraseInitStruct.PageAddress = APP_CONFIG_FLASH_ADDR;
+	EraseInitStruct.NbPages = 1;
+	HAL_FLASHEx_Erase(&EraseInitStruct, &PageError);
+	HAL_FLASH_Lock();
+}
 
 void AppConfig_GetSensorROM(uint8_t index, DS18B20_ROM_t *out_rom) {
 	if (index >= DS18B20_MAX_SENSORS || out_rom == NULL) return;

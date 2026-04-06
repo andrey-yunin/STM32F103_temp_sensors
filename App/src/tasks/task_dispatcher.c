@@ -127,22 +127,21 @@ void app_start_task_dispatcher(void *argument)
 	    	    	NVIC_SystemReset();
 	    	    	}
 	    	    else {
-	    	    	CAN_SendNack(parsed.cmd_code, 0x0001); // Ошибка ключа
+	    	    	CAN_SendNack(parsed.cmd_code, CAN_ERR_INVALID_KEY);
 	    	    	}
 	    	    break;
 	    	    }
 
 	    	case CAN_CMD_SRV_SET_NODE_ID: {
 	    		// Изменение сетевого адреса (Node ID)
-	    		if (parsed.sensor_id >= 0x02 && parsed.sensor_id <= 0x7F && parsed.sensor_id != 0x10) {
+	    		// Ограничение: 0x02..0x7F, исключая адрес дирижера 0x10
+	    		if (parsed.sensor_id >= 0x02 && parsed.sensor_id <= 0x7F && parsed.sensor_id != CAN_ADDR_CONDUCTOR) {
 	    			AppConfig_SetPerformerID(parsed.sensor_id);
-	    			// Важно: чтобы фильтр CAN обновился, после этой команды
-	    			// инженер должен отправить SRV_REBOOT или мы обновим его сами
 	    			CAN_SendDone(parsed.cmd_code, parsed.sensor_id);
 	    			}
 	    		else
 	    			{
-	    			CAN_SendNack(parsed.cmd_code, 0x0002);
+	    			CAN_SendNack(parsed.cmd_code, CAN_ERR_INVALID_PARAM);
 	    			}
 	    		break;
 	    		}
@@ -152,7 +151,7 @@ void app_start_task_dispatcher(void *argument)
 	    			CAN_SendDone(parsed.cmd_code, 0);
 	    			}
 	    		else {
-	    			CAN_SendNack(parsed.cmd_code, 0x0002); // Ошибка записи Flash
+	    			CAN_SendNack(parsed.cmd_code, CAN_ERR_FLASH_WRITE);
 	    			}
 	    		break;
 	    		}
@@ -161,22 +160,13 @@ void app_start_task_dispatcher(void *argument)
 	    		// Полная очистка Flash (приведет к сбросу на 0x40 при перезагрузке)
 	    		uint16_t key = (uint16_t)(parsed.data[0] | (parsed.data[1] << 8));
 	    		if (key == SRV_MAGIC_FACTORY_RESET) {
-	    			// Здесь можно вызвать функцию очистки или просто испортить MagicKey во Flash
-	    			// Для простоты: стираем Flash и перезагружаемся
-	    			HAL_FLASH_Unlock();
-	    			FLASH_EraseInitTypeDef EraseInitStruct;
-	    			uint32_t PageError = 0;
-	    			EraseInitStruct.TypeErase = FLASH_TYPEERASE_PAGES;
-	    			EraseInitStruct.PageAddress = APP_CONFIG_FLASH_ADDR;
-	    			EraseInitStruct.NbPages = 1;
-	    			HAL_FLASHEx_Erase(&EraseInitStruct, &PageError);
-	    			HAL_FLASH_Lock();
+	    			AppConfig_FactoryReset();
 	    			CAN_SendDone(parsed.cmd_code, 0);
 	    			osDelay(100);
 	    			NVIC_SystemReset();
 	    			}
 	    		else {
-	    			CAN_SendNack(parsed.cmd_code, 0x0001);
+	    			CAN_SendNack(parsed.cmd_code, CAN_ERR_INVALID_KEY);
 	    			}
 	    		break;
 	    		}

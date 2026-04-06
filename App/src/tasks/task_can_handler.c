@@ -101,18 +101,18 @@ void app_start_task_can_handler(void *argument) {
     uint32_t txMailbox;
 
     // --- Настройка CAN-фильтра (bxCAN Hardware Filter) ---
-    // Фильтруем по DstAddr = CAN_ADDR_THERMO_BOARD (0x40)
+    // В экосистеме DDS-240 используем открытый фильтр (Mask = 0).
+    // Это позволяет принимать широковещательные команды (DstAddr = 0x00).
+    // Фильтрация по NodeID выполняется программно в цикле RX.
     CAN_FilterTypeDef sFilterConfig;
-    uint32_t filter_id   = ((uint32_t)AppConfig_GetPerformerID() << 16) << 3 | CAN_ID_EXT;
-    uint32_t filter_mask = ((uint32_t)0xFF << 16) << 3 | CAN_ID_EXT;
 
     sFilterConfig.FilterBank = 0;
     sFilterConfig.FilterMode = CAN_FILTERMODE_IDMASK;
     sFilterConfig.FilterScale = CAN_FILTERSCALE_32BIT;
-    sFilterConfig.FilterIdHigh = (uint16_t)(filter_id >> 16);
-    sFilterConfig.FilterIdLow = (uint16_t)(filter_id & 0xFFFF);
-    sFilterConfig.FilterMaskIdHigh = (uint16_t)(filter_mask >> 16);
-    sFilterConfig.FilterMaskIdLow = (uint16_t)(filter_mask & 0xFFFF);
+    sFilterConfig.FilterIdHigh = 0x0000;
+    sFilterConfig.FilterIdLow = 0x0000;
+    sFilterConfig.FilterMaskIdHigh = 0x0000;
+    sFilterConfig.FilterMaskIdLow = 0x0000;
     sFilterConfig.FilterFIFOAssignment = CAN_RX_FIFO0;
     sFilterConfig.FilterActivation = ENABLE;
     sFilterConfig.SlaveStartFilterBank = 14;
@@ -129,7 +129,14 @@ void app_start_task_can_handler(void *argument) {
         if (flags & FLAG_CAN_RX) {
         	while (osMessageQueueGet(can_rx_queueHandle, &rx_frame, NULL, 0) == osOK) {
         		if (rx_frame.header.IDE != CAN_ID_EXT) continue;
+
         		uint32_t can_id = rx_frame.header.ExtId;
+        		uint8_t dst_addr = CAN_GET_DST_ADDR(can_id);
+        		uint8_t my_id = (uint8_t)AppConfig_GetPerformerID();
+
+                // Программная фильтрация: Наш ID или Broadcast (0x00)
+                if (dst_addr != my_id && dst_addr != CAN_ADDR_BROADCAST) continue;
+
                 if (CAN_GET_MSG_TYPE(can_id) != CAN_MSG_TYPE_COMMAND) continue;
                 if (rx_frame.header.DLC < 3) continue;
 
@@ -138,7 +145,7 @@ void app_start_task_can_handler(void *argument) {
                 parsed.sensor_id = rx_frame.data[2];
                 parsed.data_len = (rx_frame.header.DLC > 3) ? (rx_frame.header.DLC - 3) : 0;
 
-                for (uint8_t i = 0; i < parsed.data_len && i < 5; i++) {
+                for (uint8_t i = 0; i < parsed.data_len && i < 8; i++) {
                 	parsed.data[i] = rx_frame.data[3 + i];
                 	}
 
@@ -149,6 +156,12 @@ void app_start_task_can_handler(void *argument) {
         // --- Обработка передачи (TX) ---
         if (flags & FLAG_CAN_TX) {
         	while (osMessageQueueGet(can_tx_queueHandle, &tx_frame, NULL, 0) == osOK) {
+        		// Mailbox Guard: Ожидаем свободный почтовый ящик перед отправкой
+        		uint32_t start_tick = osKernelGetTickCount();
+        		while (HAL_CAN_GetTxMailboxesFreeLevel(&hcan) == 0) {
+        			if ((osKernelGetTickCount() - start_tick) > 10) break; // Таймаут 10мс
+        			osDelay(1);
+        		}
         		HAL_CAN_AddTxMessage(&hcan, &tx_frame.header, tx_frame.data, &txMailbox);
         		}
         }

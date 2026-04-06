@@ -71,12 +71,16 @@
 #define CAN_GET_SRC_ADDR(id)    ((uint8_t)(((id) >> 8)  & 0xFF))
 
 // ============================================================
-// Коды ошибок для NACK-ответов
+// Коды ошибок для NACK-ответов (DDS-240 Standard)
 // ============================================================
 #define CAN_ERR_NONE                0x0000
 #define CAN_ERR_UNKNOWN_CMD         0x0001
 #define CAN_ERR_INVALID_SENSOR_ID   0x0002
 #define CAN_ERR_SENSOR_FAILURE      0x0003
+#define CAN_ERR_INVALID_KEY         0x0004 // Ошибка защитного ключа (Magic Key)
+#define CAN_ERR_FLASH_WRITE         0x0005 // Ошибка записи во внутреннюю память
+#define CAN_ERR_INVALID_PARAM       0x0006 // Некорректный параметр команды
+#define CAN_ERR_BUSY                0x0007 // Устройство занято выполнением другой задачи
 
 // ============================================================
 // Внутренние структуры для передачи в Dispatcher
@@ -111,7 +115,7 @@ void CAN_SendData(uint16_t cmd_code, uint8_t *data, uint8_t len);
 #define CAN_CMD_SRV_GET_DEVICE_INFO  0xF001
 #define CAN_CMD_SRV_REBOOT           0xF002
 #define CAN_CMD_SRV_FLASH_COMMIT     0xF003
-#define CAN_CMD_SRV_FACTORY_RESET    0xF004
+#define CAN_CMD_SRV_FACTORY_RESET    0xF006 // Синхронизировано с экосистемой
 #define CAN_CMD_SRV_SET_NODE_ID      0xF005
 
 // ============================================================
