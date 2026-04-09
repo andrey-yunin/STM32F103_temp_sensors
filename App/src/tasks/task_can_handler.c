@@ -33,9 +33,10 @@ void CAN_SendAck(uint16_t cmd_code) {
     tx.header.ExtId = CAN_BUILD_ID(CAN_PRIORITY_NORMAL, CAN_MSG_TYPE_ACK, CAN_ADDR_CONDUCTOR, AppConfig_GetPerformerID());
     tx.header.IDE = CAN_ID_EXT;
     tx.header.RTR = CAN_RTR_DATA;
-    tx.header.DLC = 2;
+    tx.header.DLC = 8; // Unified DLC=8
     tx.data[0] = (uint8_t)(cmd_code & 0xFF);
     tx.data[1] = (uint8_t)((cmd_code >> 8) & 0xFF);
+    for(uint8_t i = 2; i < 8; i++) tx.data[i] = 0x00;
 
     osMessageQueuePut(can_tx_queueHandle, &tx, 0, 0);
     osThreadFlagsSet(task_can_handleHandle, FLAG_CAN_TX);
@@ -46,11 +47,12 @@ void CAN_SendNack(uint16_t cmd_code, uint16_t error_code) {
 	tx.header.ExtId = CAN_BUILD_ID(CAN_PRIORITY_NORMAL, CAN_MSG_TYPE_NACK, CAN_ADDR_CONDUCTOR, AppConfig_GetPerformerID());
     tx.header.IDE = CAN_ID_EXT;
     tx.header.RTR = CAN_RTR_DATA;
-    tx.header.DLC = 4;
+    tx.header.DLC = 8; // Unified DLC=8
     tx.data[0] = (uint8_t)(cmd_code & 0xFF);
     tx.data[1] = (uint8_t)((cmd_code >> 8) & 0xFF);
     tx.data[2] = (uint8_t)(error_code & 0xFF);
     tx.data[3] = (uint8_t)((error_code >> 8) & 0xFF);
+    for(uint8_t i = 4; i < 8; i++) tx.data[i] = 0x00;
 
     osMessageQueuePut(can_tx_queueHandle, &tx, 0, 0);
     osThreadFlagsSet(task_can_handleHandle, FLAG_CAN_TX);
@@ -61,11 +63,12 @@ void CAN_SendDone(uint16_t cmd_code, uint8_t sensor_id) {
     tx.header.ExtId = CAN_BUILD_ID(CAN_PRIORITY_NORMAL, CAN_MSG_TYPE_DATA_DONE_LOG, CAN_ADDR_CONDUCTOR, AppConfig_GetPerformerID());
     tx.header.IDE = CAN_ID_EXT;
     tx.header.RTR = CAN_RTR_DATA;
-    tx.header.DLC = 4;
+    tx.header.DLC = 8; // Unified DLC=8
     tx.data[0] = CAN_SUB_TYPE_DONE;
     tx.data[1] = (uint8_t)(cmd_code & 0xFF);
     tx.data[2] = (uint8_t)((cmd_code >> 8) & 0xFF);
     tx.data[3] = sensor_id;
+    for(uint8_t i = 4; i < 8; i++) tx.data[i] = 0x00;
 
     osMessageQueuePut(can_tx_queueHandle, &tx, 0, 0);
     osThreadFlagsSet(task_can_handleHandle, FLAG_CAN_TX);
@@ -76,12 +79,13 @@ void CAN_SendData(uint16_t cmd_code, uint8_t *data, uint8_t len) {
     tx.header.ExtId = CAN_BUILD_ID(CAN_PRIORITY_NORMAL, CAN_MSG_TYPE_DATA_DONE_LOG, CAN_ADDR_CONDUCTOR, AppConfig_GetPerformerID());
     tx.header.IDE = CAN_ID_EXT;
     tx.header.RTR = CAN_RTR_DATA;
-    tx.header.DLC = (len > 6) ? 8 : (len + 2);
+    tx.header.DLC = 8; // Unified DLC=8
     tx.data[0] = CAN_SUB_TYPE_DATA;
     tx.data[1] = 0x80; // Sequence Info: EOT=1, Seq=0 (для одиночных пакетов)
 
-    for(uint8_t i = 0; i < len && i < 6; i++) {
-    	tx.data[2 + i] = data[i];
+    for(uint8_t i = 0; i < 6; i++) {
+        if (i < len) tx.data[2 + i] = data[i];
+        else         tx.data[2 + i] = 0x00;
     	}
 
      osMessageQueuePut(can_tx_queueHandle, &tx, 0, 0);
@@ -138,14 +142,19 @@ void app_start_task_can_handler(void *argument) {
                 if (dst_addr != my_id && dst_addr != CAN_ADDR_BROADCAST) continue;
 
                 if (CAN_GET_MSG_TYPE(can_id) != CAN_MSG_TYPE_COMMAND) continue;
-                if (rx_frame.header.DLC < 3) continue;
+                
+                // --- Directive 2.0: Strict DLC check ---
+                if (rx_frame.header.DLC != 8) {
+                    CAN_SendNack(0x0000, CAN_ERR_INVALID_PARAM); // Опционально: сообщаем об ошибке формата
+                    continue;
+                }
 
                 ParsedCanCommand_t parsed;
                 parsed.cmd_code = (uint16_t)(rx_frame.data[0] | ((uint16_t)rx_frame.data[1] << 8));
                 parsed.sensor_id = rx_frame.data[2];
-                parsed.data_len = (rx_frame.header.DLC > 3) ? (rx_frame.header.DLC - 3) : 0;
+                parsed.data_len = 5; // Всегда 5 байт (3 заголовок + 5 данные = 8 DLC)
 
-                for (uint8_t i = 0; i < parsed.data_len && i < 8; i++) {
+                for (uint8_t i = 0; i < 5; i++) {
                 	parsed.data[i] = rx_frame.data[3 + i];
                 	}
 

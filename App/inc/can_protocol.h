@@ -123,14 +123,15 @@ void CAN_SendData(uint16_t cmd_code, uint8_t *data, uint8_t len);
 // ============================================================
 #define CAN_CMD_SRV_SCAN_1WIRE       0xF101
 #define CAN_CMD_SRV_GET_PHYS_ID      0xF102
-#define CAN_CMD_SRV_SET_CHANNEL_MAP  0xF103
+#define CAN_CMD_SRV_SET_CHANNEL_MAP  0xF103 // Часть 1: Первые 4 байта ROM
 #define CAN_CMD_SRV_GET_CHANNEL_MAP  0xF104
+#define CAN_CMD_SRV_SET_CH_MAP_P2    0xF105 // Часть 2: Оставшиеся 4 байта ROM
 
 // ============================================================
-// Защитные ключи (Magic Keys)
+// Защитные ключи (Magic Keys) - Directive 2.0 Unified
 // ============================================================
-#define SRV_MAGIC_REBOOT             0xDEAD
-#define SRV_MAGIC_FACTORY_RESET      0xFACE
+#define SRV_MAGIC_REBOOT             0x55AA
+#define SRV_MAGIC_FACTORY_RESET      0xDEAD
 
 // ============================================================
 // Версия прошивки (Firmware Version)

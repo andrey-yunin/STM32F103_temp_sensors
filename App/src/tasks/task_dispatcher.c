@@ -27,6 +27,7 @@
 void app_start_task_dispatcher(void *argument)
 {
 	ParsedCanCommand_t parsed;
+	static uint8_t rom_id_buffer[8]; // Буфер для двухфазной сборки ROM ID (Directive 2.0)
 
 	for (;;) {
 		// Ожидаем команду из очереди (parser_queue), наполняемой в task_can_handler
@@ -207,12 +208,26 @@ void app_start_task_dispatcher(void *argument)
 	    		}
 
 	    	case CAN_CMD_SRV_SET_CHANNEL_MAP: {
-	    		// Привязка ROM ID к логическому каналу (logical_id берем из sensor_id)
-	    	    // Сами 8 байт ROM ID приходят в поле data
-	    		if (parsed.sensor_id < DS18B20_MAX_SENSORS && parsed.data_len >= 8) {
+	    		// Фаза 1: Принимаем первые 4 байта ROM ID
+	    		if (parsed.sensor_id < DS18B20_MAX_SENSORS) {
+	    			memcpy(&rom_id_buffer[0], parsed.data, 4);
+	    			CAN_SendDone(parsed.cmd_code, parsed.sensor_id);
+	    			}
+	    		else {
+	    			CAN_SendNack(parsed.cmd_code, CAN_ERR_INVALID_SENSOR_ID);
+	    			}
+	    		break;
+	    	}
+
+	    	case CAN_CMD_SRV_SET_CH_MAP_P2: {
+	    		// Фаза 2: Принимаем оставшиеся 4 байта ROM ID и сохраняем
+	    		if (parsed.sensor_id < DS18B20_MAX_SENSORS) {
+	    			memcpy(&rom_id_buffer[4], parsed.data, 4);
+	    			
 	    			DS18B20_ROM_t new_rom;
-	    			memcpy(new_rom.rom_code, parsed.data, 8);
+	    			memcpy(new_rom.rom_code, rom_id_buffer, 8);
 	    			AppConfig_SetSensorROM(parsed.sensor_id, &new_rom);
+	    			
 	    			CAN_SendDone(parsed.cmd_code, parsed.sensor_id);
 	    			}
 	    		else {
