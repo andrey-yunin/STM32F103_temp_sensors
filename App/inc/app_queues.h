@@ -23,5 +23,8 @@ extern osMessageQueueId_t can_tx_queueHandle;
 // Очередь для передачи распарсенных команд (ParsedCanCommand_t)
 extern osMessageQueueId_t parser_queueHandle;
 
+// Очередь прикладных команд температурного контроллера (Dispatcher -> Temp Monitor)
+extern osMessageQueueId_t thermo_queueHandle;
+
 
 #endif /* APP_QUEUES_H_ */

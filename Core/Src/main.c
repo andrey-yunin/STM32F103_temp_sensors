@@ -82,6 +82,7 @@ const osThreadAttr_t task_temp_monit_attributes = {
 osMessageQueueId_t can_rx_queueHandle;
 osMessageQueueId_t can_tx_queueHandle;
 osMessageQueueId_t parser_queueHandle;
+osMessageQueueId_t thermo_queueHandle;
 
 
 /* USER CODE END PV */
@@ -143,9 +144,11 @@ AppConfig_Init(); // Загрузка маппинга и создание мь�
 can_rx_queueHandle = osMessageQueueNew(CAN_RX_QUEUE_LEN, sizeof(CanRxFrame_t), NULL); // CAN-фрейм: на прием
 can_tx_queueHandle = osMessageQueueNew(CAN_TX_QUEUE_LEN, sizeof(CanTxFrame_t), NULL); // CAN-фрейм на отправку
 parser_queueHandle = osMessageQueueNew(DISPATCHER_QUEUE_LEN, sizeof(ParsedCanCommand_t), NULL); // Структура команды
+thermo_queueHandle = osMessageQueueNew(THERMO_QUEUE_LEN, sizeof(ThermoCommand_t), NULL); // Прикладная команда Thermo
 
 // Проверка успешности создания очередей
-if (can_rx_queueHandle == NULL || parser_queueHandle == NULL || can_tx_queueHandle == NULL) {
+if (can_rx_queueHandle == NULL || parser_queueHandle == NULL ||
+	can_tx_queueHandle == NULL || thermo_queueHandle == NULL) {
 	Error_Handler();
     }
 

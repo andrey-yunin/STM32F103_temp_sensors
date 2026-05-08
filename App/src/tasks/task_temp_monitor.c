@@ -8,20 +8,260 @@
 
 #include "task_temp_monitor.h"
 #include "cmsis_os.h"
+#include "app_queues.h"
 #include "app_flash.h"
+#include "can_protocol.h"
 #include "ds18b20.h"
 #include <string.h>
+#include <stdbool.h>
+
+
+#define TEMP_MONITOR_CONVERSION_DELAY_MS   800U
+#define TEMP_MONITOR_IDLE_DELAY_MS         2000U
+#define TEMP_MONITOR_NO_PENDING_SENSOR     0xFFU
 
 // --- Инкапсулированные данные (скрыты внутри модуля) ---
 static float s_latest_temperatures[DS18B20_MAX_SENSORS];
+static uint8_t s_rom_id_buffer[8];
+static uint8_t s_rom_map_pending_sensor_id = TEMP_MONITOR_NO_PENDING_SENSOR;
+static bool s_rom_map_pending = false;
 static osMutexId_t tempMutex = NULL;
 
 const osMutexAttr_t tempMutex_attr = {
 		"tempMutex",
 		osMutexPrioInherit,
 		NULL,
-		0U
-		};
+			0U
+			};
+
+static void TempMonitor_ClearPendingMap(void)
+{
+	memset(s_rom_id_buffer, 0xFF, sizeof(s_rom_id_buffer));
+  	s_rom_map_pending_sensor_id = TEMP_MONITOR_NO_PENDING_SENSOR;
+  	s_rom_map_pending = false;
+}
+
+static bool TempMonitor_IsEmptyROM(const DS18B20_ROM_t* rom)
+{
+	if (rom == NULL) {
+		return false;
+		}
+
+	for (uint8_t i = 0; i < sizeof(rom->rom_code); i++) {
+		if (rom->rom_code[i] != 0xFFU) {
+			return false;
+			}
+		}
+	return true;
+}
+
+
+static void TempMonitor_SetTemperature(uint8_t index, float value)
+{
+	if (index < DS18B20_MAX_SENSORS && tempMutex != NULL) {
+		if (osMutexAcquire(tempMutex, osWaitForever) == osOK) {
+			s_latest_temperatures[index] = value;
+			osMutexRelease(tempMutex);
+			}
+		}
+}
+
+static void TempMonitor_SendTemperature(uint16_t cmd_code, uint8_t sensor_id)
+{
+	float raw_t = TempMonitor_GetTemperature(sensor_id);
+
+	if (raw_t > -100.0f) {
+		// Формат температуры: int16, десятые доли градуса Celsius, little-endian.
+		int16_t tx_val = (int16_t)(raw_t * 10.0f);
+		uint8_t data[2];
+		data[0] = (uint8_t)(tx_val & 0xFF);
+		data[1] = (uint8_t)((tx_val >> 8) & 0xFF);
+
+		CAN_SendData(cmd_code, data, sizeof(data));
+		CAN_SendDone(cmd_code, sensor_id);
+		}
+	else {
+		// Канал существует, но последнего валидного измерения нет.
+		CAN_SendNack(cmd_code, CAN_ERR_SENSOR_FAILURE);
+		}
+}
+
+static void TempMonitor_SendAllTemperatures(uint16_t cmd_code)
+{
+	for (uint8_t i = 0; i < DS18B20_MAX_SENSORS; i++) {
+		float t = TempMonitor_GetTemperature(i);
+
+		if (t > -100.0f) {
+			int16_t tx_v = (int16_t)(t * 10.0f);
+			uint8_t data[3];
+			data[0] = i;
+			data[1] = (uint8_t)(tx_v & 0xFF);
+			data[2] = (uint8_t)((tx_v >> 8) & 0xFF);
+			CAN_SendData(cmd_code, data, sizeof(data));
+			}
+		}
+
+	CAN_SendDone(cmd_code, 0xFF);
+}
+
+static void TempMonitor_SendPhysId(uint16_t cmd_code, uint8_t sensor_id)
+{
+	DS18B20_ROM_t* rom = DS18B20_GetROM(sensor_id);
+
+	if (rom != NULL) {
+		uint8_t data[9];
+		data[0] = sensor_id;
+		memcpy(&data[1], rom->rom_code, sizeof(rom->rom_code));
+
+		// DATA frame несет максимум 6 байт полезной нагрузки,
+		// поэтому 64-bit ROM ID передается двумя CAN DATA кадрами.
+		CAN_SendData(cmd_code, data, 6);
+		CAN_SendData(cmd_code, &data[6], 3);
+		CAN_SendDone(cmd_code, sensor_id);
+		}
+	else {
+		CAN_SendNack(cmd_code, CAN_ERR_INVALID_SENSOR_ID);
+		}
+}
+
+static void TempMonitor_SendChannelMap(uint16_t cmd_code, uint8_t sensor_id)
+{
+	DS18B20_ROM_t mapped_rom;
+	uint8_t data[9];
+
+	AppConfig_GetSensorROM(sensor_id, &mapped_rom);
+
+	data[0] = sensor_id;
+	memcpy(&data[1], mapped_rom.rom_code, sizeof(mapped_rom.rom_code));
+
+	CAN_SendData(cmd_code, data, 6);
+	CAN_SendData(cmd_code, &data[6], 3);
+	CAN_SendDone(cmd_code, sensor_id);
+}
+
+static void TempMonitor_ProcessCommand(const ThermoCommand_t *cmd)
+{
+	switch (cmd->cmd_code) {
+	case CAN_CMD_SENSOR_GET_TEMP:
+		if (cmd->sensor_id >= DS18B20_MAX_SENSORS) {
+			CAN_SendNack(cmd->cmd_code, CAN_ERR_INVALID_SENSOR_ID);
+			break;
+			}
+		TempMonitor_SendTemperature(cmd->cmd_code, cmd->sensor_id);
+		break;
+
+	case CAN_CMD_SENSOR_GET_ALL_TEMPS:
+		TempMonitor_SendAllTemperatures(cmd->cmd_code);
+		break;
+
+	case CAN_CMD_SRV_SCAN_1WIRE: {
+		uint8_t count = DS18B20_Init();
+		uint8_t data[1];
+		data[0] = count;
+		CAN_SendData(cmd->cmd_code, data, sizeof(data));
+		CAN_SendDone(cmd->cmd_code, count);
+		break;
+		}
+
+	case CAN_CMD_SRV_GET_PHYS_ID:
+		if (cmd->sensor_id >= DS18B20_MAX_SENSORS) {
+			CAN_SendNack(cmd->cmd_code, CAN_ERR_INVALID_SENSOR_ID);
+			break;
+			}
+		TempMonitor_SendPhysId(cmd->cmd_code, cmd->sensor_id);
+		break;
+
+	case CAN_CMD_SRV_SET_CHANNEL_MAP:
+		if (cmd->sensor_id >= DS18B20_MAX_SENSORS) {
+			CAN_SendNack(cmd->cmd_code, CAN_ERR_INVALID_SENSOR_ID);
+			break;
+			}
+
+		if (cmd->data_len < 4U) {
+			CAN_SendNack(cmd->cmd_code, CAN_ERR_INVALID_PARAM);
+			break;
+			}
+
+		// Phase 1: сохраняем первые 4 байта ROM как незавершенную транзакцию.
+	  	// data[4] в текущем DLC=8 остается резервным байтом и не входит в ROM.
+		memcpy(&s_rom_id_buffer[0], cmd->data, 4);
+	  	s_rom_map_pending_sensor_id = cmd->sensor_id;
+	  	s_rom_map_pending = true;
+
+	  	CAN_SendDone(cmd->cmd_code, cmd->sensor_id);
+	  	break;
+
+	case CAN_CMD_SRV_GET_CHANNEL_MAP:{
+	  	if (cmd->sensor_id >= DS18B20_MAX_SENSORS) {
+	  		CAN_SendNack(cmd->cmd_code, CAN_ERR_INVALID_SENSOR_ID);
+	  		break;
+	  	}
+
+	  	// Возвращает сохраненный ROM-код логического канала.
+	  	TempMonitor_SendChannelMap(cmd->cmd_code, cmd->sensor_id);
+	  	break;
+	}
+
+
+
+	case CAN_CMD_SRV_SET_CH_MAP_P2: {
+		DS18B20_ROM_t new_rom;
+
+		if (cmd->sensor_id >= DS18B20_MAX_SENSORS) {
+	  		CAN_SendNack(cmd->cmd_code, CAN_ERR_INVALID_SENSOR_ID);
+	  		break;
+	  	}
+
+	  	if (cmd->data_len < 4U ||
+	  	    !s_rom_map_pending ||
+	  	    s_rom_map_pending_sensor_id != cmd->sensor_id) {
+	  		TempMonitor_ClearPendingMap();
+	  		CAN_SendNack(cmd->cmd_code, CAN_ERR_INVALID_PARAM);
+	  		break;
+	  	}
+
+	  	// Phase 2: принимаем последние 4 байта только для того же sensor_id.
+	  	memcpy(&s_rom_id_buffer[4], cmd->data, 4);
+	  	memcpy(new_rom.rom_code, s_rom_id_buffer, sizeof(new_rom.rom_code));
+
+	  	// Допускаем два состояния:
+	  	 // 1. валидный DS18B20 ROM;
+	  	 // 2. 0xFF..0xFF как пустой, очищенный канал.
+	  	 if (!TempMonitor_IsEmptyROM(&new_rom) && !DS18B20_IsValidROM(&new_rom)) {
+	  		 TempMonitor_ClearPendingMap();
+	  		 CAN_SendNack(cmd->cmd_code, CAN_ERR_INVALID_PARAM);
+	  		 break;
+	  		 }
+
+
+	  	AppConfig_SetSensorROM(cmd->sensor_id, &new_rom);
+	  	TempMonitor_ClearPendingMap();
+
+	  	CAN_SendDone(cmd->cmd_code, cmd->sensor_id);
+	  	break;
+	  	}
+
+	default:
+	  	CAN_SendNack(cmd->cmd_code, CAN_ERR_UNKNOWN_CMD);
+	  	break;
+
+	}
+}
+
+static void TempMonitor_ProcessPendingCommands(uint32_t timeout_ms)
+{
+	ThermoCommand_t cmd;
+
+	if (osMessageQueueGet(thermo_queueHandle, &cmd, NULL, timeout_ms) == osOK) {
+		TempMonitor_ProcessCommand(&cmd);
+
+		// После пробуждения очищаем очередь без ожидания, чтобы серия команд
+		// не застревала за очередным циклом измерения.
+		while (osMessageQueueGet(thermo_queueHandle, &cmd, NULL, 0) == osOK) {
+			TempMonitor_ProcessCommand(&cmd);
+			}
+		}
+}
 
 // --- Публичный API доступа к данным ---
 /**
@@ -58,40 +298,39 @@ void app_start_task_temp_monitor(void *argument)
 	float current_temp = 0.0f;
 
 	for(;;) {
+		// Сначала обслуживаем команды, которые уже пришли от Dispatcher.
+		TempMonitor_ProcessPendingCommands(0);
+
 		// 3. ШИРОКОВЕЩАТЕЛЬНЫЙ ЗАПУСК: Все датчики на шине начинают мерить температуру.
 	    DS18B20_StartAll();
 
 	    // 4. ОЖИДАНИЕ: Даем датчикам время на замер (750мс).
-	    osDelay(800);
+	    osDelay(TEMP_MONITOR_CONVERSION_DELAY_MS);
 
 	    // 5. ОПРОС ПО ТАБЛИЦЕ МАППИНГА (из Flash)
 	    for (uint8_t i = 0; i < DS18B20_MAX_SENSORS; i++) {
-	    	// Читаем ROM ID для канала 'i' из защищенной конфигурации
-	    	AppConfig_GetSensorROM(i, &target_rom);
+		// Читаем ROM ID для канала 'i' из защищенной конфигурации
+		AppConfig_GetSensorROM(i, &target_rom);
 
-	    	// Проверяем, привязан ли датчик (первый байт DS18B20 всегда 0x28)
-	    	if (target_rom.rom_code[0] == 0x28) {
-	    		// Адресное чтение конкретного датчика
-	    		if (DS18B20_ReadTemperature(&target_rom, &current_temp)) {
-	    			// Успех: сохраняем результат под защитой мьютекса
-	    			if (osMutexAcquire(tempMutex, osWaitForever) == osOK) {
-	    				s_latest_temperatures[i] = current_temp;
-	    				osMutexRelease(tempMutex);
-	    				}
-	    			}
-	    		else {
-	    			// Ошибка чтения (датчик пропал или помеха)
-	    			s_latest_temperatures[i] = -999.0f;
-	    			}
-	    		}
-	    	else {
-	    		// Канал не настроен (пусто во Flash)
-	    		s_latest_temperatures[i] = -999.0f;
-	    		}
-	    	}
+		// Читаем только валидно привязанный DS18B20 ROM: family code + CRC.
+		if (DS18B20_IsValidROM(&target_rom)) {
+				// Адресное чтение конкретного датчика
+				if (DS18B20_ReadTemperature(&target_rom, &current_temp)) {
+					TempMonitor_SetTemperature(i, current_temp);
+					}
+				else {
+					// Ошибка чтения (датчик пропал или помеха)
+					TempMonitor_SetTemperature(i, -999.0f);
+					}
+				}
+			else {
+				// Канал не настроен (пусто во Flash)
+				TempMonitor_SetTemperature(i, -999.0f);
+				}
+			}
 
-	    // Пауза между полными циклами опроса всей системы (например, 2 секунды)
-    	 osDelay(2000);
-    	 }
+	    // В idle-окне ждем прикладную команду. Если команда пришла,
+	    // задача просыпается сразу, обрабатывает очередь и начинает новый цикл.
+	    TempMonitor_ProcessPendingCommands(TEMP_MONITOR_IDLE_DELAY_MS);
+	 }
 }
-

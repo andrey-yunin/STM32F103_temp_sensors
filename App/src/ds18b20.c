@@ -17,6 +17,8 @@
 #define DS18B20_CMD_SKIPROM       0xCC
 #define DS18B20_CMD_CONVERTTEMP   0x44
 #define DS18B20_CMD_READSCRATCH   0xBE
+#define DS18B20_FAMILY_CODE       0x28
+
 
 extern TIM_HandleTypeDef htim3;
 
@@ -89,7 +91,7 @@ uint8_t OneWire_ReadByte() {
 	return byte;
 }
 
-uint8_t OneWire_CRC8(uint8_t* data, uint8_t len) {
+static uint8_t OneWire_CRC8(const uint8_t* data, uint8_t len) {
 	uint8_t crc = 0;
 	while (len--) {
 		uint8_t inbyte = *data++;
@@ -102,6 +104,20 @@ uint8_t OneWire_CRC8(uint8_t* data, uint8_t len) {
 		}
 	return crc;
 }
+
+bool DS18B20_IsValidROM(const DS18B20_ROM_t* rom)
+{
+	if (rom == NULL) {
+  	return false;
+  	}
+
+	if (rom->rom_code[0] != DS18B20_FAMILY_CODE) {
+		return false;
+		}
+
+	return OneWire_CRC8(rom->rom_code, 7) == rom->rom_code[7];
+}
+
 
 // --- Алгоритм Search ROM (Maxim Integrated) ---
 

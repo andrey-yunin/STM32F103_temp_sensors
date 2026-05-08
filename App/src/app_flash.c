@@ -10,6 +10,7 @@
 #include "cmsis_os.h"  // Для osMutex
 #include <string.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 // --- Инкапсулированные данные (скрыты внутри модуля) ---
 static AppConfig_t g_app_config;
@@ -39,25 +40,32 @@ void AppConfig_GetMCU_UID(uint8_t* out_uid) {
 
 
 /**
- * @brief Расчет контрольной суммы CRC16 (Poly 0xA001, Modbus).
+ * @brief Расчет CRC16 Modbus для конфигурации.
+ *
+ * CRC считается только по полезной части структуры:
+ * от начала AppConfig_t до поля checksum, не включая сам checksum.
+ * Это защищает от ошибок из-за padding/выравнивания компилятора.
  */
+
 static uint16_t CalculateChecksum(AppConfig_t* cfg) {
 	uint16_t crc = 0xFFFF;
-	uint8_t* p = (uint8_t*)cfg;
-	uint32_t len = sizeof(AppConfig_t) - sizeof(cfg->checksum);
+	  	const uint8_t* p = (const uint8_t*)cfg;
+	  	const uint32_t len = (uint32_t)offsetof(AppConfig_t, checksum);
 
-	for (uint32_t i = 0; i < len; i++) {
-		crc ^= p[i];
-		for (int j = 0; j < 8; j++) {
-			if (crc & 0x0001) {
-				crc = (crc >> 1) ^ 0xA001;
-				}
-			else {
-				crc >>= 1;
-				}
-			}
-		}
-	return crc;
+	  	for (uint32_t i = 0; i < len; i++) {
+	  		crc ^= p[i];
+
+	  		for (uint8_t bit = 0; bit < 8; bit++) {
+	  			if ((crc & 0x0001U) != 0U) {
+	  				crc = (crc >> 1) ^ 0xA001U;
+	  			}
+	  			else {
+	  				crc >>= 1;
+	  			}
+	  		}
+	  	}
+
+	  	return crc;
 }
 
 
@@ -135,12 +143,13 @@ uint32_t AppConfig_GetPerformerID(void) {
 /**
  * @brief Безопасная запись CAN ID платы (в RAM).
  */
-void AppConfig_SetPerformerID(uint32_t id) {
+void AppConfig_SetPerformerID(uint32_t id)
+{
 	if (osMutexAcquire(configMutex, osWaitForever) == osOK) {
-		g_app_config.performer_id = id;
+		g_app_config.performer_id = (uint8_t)id;
 		osMutexRelease(configMutex);
 		}
-	}
+}
 
 
 /**

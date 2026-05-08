@@ -46,23 +46,25 @@ The Data Length Code (DLC) and payload structure are **variable** and depend on 
 | Byte(s)  | Field Name      | Description                                                 |
 |----------|-----------------|-------------------------------------------------------------|
 | `0-1`    | **Low-Level** Command Code | The 16-bit code for a hardware-level action. See `5_Low_Level_Commands.md`. |
-| `2-7`    | Parameters      | Command-specific, low-level parameters. Their length defines the final DLC. |
+| `2-7`    | Parameters      | Command-specific, low-level parameters. Unused bytes are zero-padded. |
 
-### `ACK` / `NACK` Payload (DLC = 4)
+All `Conductor <-> Executor` frames use strict `DLC=8`. Older notes about logical payload length describe used bytes only and must not be interpreted as variable CAN DLC on the executor bus.
+
+### `ACK` / `NACK` Payload (DLC = 8)
 
 | Byte(s)  | Field Name      | Description                                                 |
 |----------|-----------------|-------------------------------------------------------------|
 | `0-1`    | **Low-Level** Command Code | The 16-bit code of the command being acknowledged.          |
 | `2-3`    | Error Code      | For `NACK` only. A 16-bit code detailing the error. 0 for `ACK`. |
 
-### `DATA` / `DONE` / `LOG` Payload (`Message Type == 11`)
+### `DATA` / `DONE` / `LOG` Payload (`Message Type == 11`, DLC = 8)
 
-A sub-type in the first byte differentiates these messages. The DLC is variable.
+A sub-type in the first byte differentiates these messages. Unused bytes are zero-padded.
 
-| Sub-Type | DLC      | Payload Description                                          |
-|----------|----------|--------------------------------------------------------------|
-| `DONE`   | 3        | `0x01` (Sub-Type) + 16-bit Low-Level Command Code            |
-| `DATA`   | 3-8      | `0x02` (Sub-Type) + Sequence Info + 1-6 bytes of data.       |
-| `LOG`    | 3-8      | `0x03` (Sub-Type) + Log Level + 1-6 bytes of message.        |
+| Sub-Type | Payload Description                                          |
+|----------|--------------------------------------------------------------|
+| `DONE`   | `0x01` (Sub-Type) + 16-bit Low-Level Command Code + optional channel/status bytes, then zero padding |
+| `DATA`   | `0x02` (Sub-Type) + Sequence Info + 1-6 bytes of data.       |
+| `LOG`    | `0x03` (Sub-Type) + Log Level + 1-6 bytes of message.        |
 
 *For detailed payload structures, see `3_Application_Layer.md`.*

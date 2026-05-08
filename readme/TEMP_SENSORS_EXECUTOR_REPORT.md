@@ -259,3 +259,118 @@ Following a deep code review of `ds18b20.c`, the following findings were recorde
 
 ## 13. ЗАКЛЮЧЕНИЕ ПО МОДЕРНИЗАЦИИ (Directive 2.0)
 Работы по приведению исполнителя термодатчиков к стандарту Экосистемы 2.0 завершены. Все выявленные критические ошибки (несоответствие MTU, устаревшие ключи) устранены. Проект утвержден как **"Golden Template 2.0 Compliant"** и готов к тиражированию на другие модули системы.
+
+---
+
+## 14. Корректирующий аудит после возврата к последнему коммиту (08.05.2026)
+
+Статус разделов 9-13 выше признан историческим и не является текущим промышленным статусом проекта. После сверки с актуальной общей экосистемой DDS-240, `dds240_global_config.h`, `CONDUCTOR_INTEGRATION_GUIDE.md`, Motion Executor и Fluidics Executor текущий статус Thermo Executor: **требуется целевой рефакторинг перед промышленной приемкой**.
+
+Код в рамках этого аудита не изменялся.
+
+### 14.1. Подтверждено как уже реализованное
+
+- [x] DS18B20 Search ROM / Match ROM logic.
+- [x] 1-Wire mapping через Flash.
+- [x] Двухфазная передача ROM ID через `F103` / `F105`.
+- [x] Базовые команды `0x9010 SENSOR_GET_ALL_TEMPS` и `0x9011 SENSOR_GET_TEMP`.
+- [x] Базовые service-команды `F001/F002/F003/F005/F006`.
+- [x] Физический `DLC=8` для ответов ACK/NACK/DATA/DONE.
+
+### 14.2. Подтвержденные несоответствия
+
+- [x] `DeviceType` Thermo смешан с NodeID: исправлено в `can_protocol.h`, теперь Thermo DeviceType `0x02` при NodeID `0x40`.
+- [x] Обязательные service-команды `F004 GET_UID` и `F007 GET_STATUS`: обе реализованы в dispatcher, проект собирается.
+- [~] Общая диагностика `GET_STATUS` с метриками `0x0001..0x0012`: `F007` реализован, константы, `CanDiagnostics_t` и snapshot API добавлены; инкремент счетчиков еще требуется.
+- [~] TX diagnostics: добавлен central TX helper, считаются `TX_TOTAL` и `TX_QUEUE_OVERFLOW`; mailbox timeout / HAL error еще требуют отдельного блока.
+- [ ] Wrong DLC сейчас обрабатывается NACK-ом, а должен быть silent drop + diagnostic counter.
+- [x] Команда `F104 GET_CHANNEL_MAP` реализована: возвращает текущий ROM ID канала двумя DATA-кадрами.
+- [ ] CAN timing и `TransmitFifoPriority` не совпадают с проверенными Motion/Fluidics исполнителями.
+- [ ] Последняя Flash page не защищена linker script.
+- [ ] TIM3 для 1-Wire `delay_us()` требует явного подтверждения запуска.
+
+### 14.3. Scoped NACK registry
+
+В Motion/Fluidics и Thermo одинаковые числовые NACK-коды могут иметь разные доменные имена. Это допустимо, потому что NACK интерпретируется в контексте транзакции: source NodeID + command code + error code.
+
+Фактическое состояние по трем проектам:
+
+- [x] Motion: `0x0002 INVALID_MOTOR_ID`, `0x0003 MOTOR_BUSY`.
+- [x] Fluidics: `0x0002 INVALID_DEVICE_ID`, `0x0003 DEVICE_BUSY`.
+- [x] Thermo: `0x0002 INVALID_SENSOR_ID`, `0x0003 SENSOR_FAILURE`, `0x0007 BUSY`.
+- [x] Новые числовые значения для Thermo-specific NACK не назначаются.
+- [x] Эти scoped aliases добавлены в глобальный конфиг.
+- [x] Интеграционный guide обновлен: Thermo NACK registry теперь описывает scoped semantics для `INVALID_SENSOR_ID`, `SENSOR_FAILURE` и `THERMO_BUSY`.
+- [ ] Дирижер должен явно транслировать Thermo `SENSOR_FAILURE` в Host/API `TEMP_DATA.status = 3` и/или ошибки группы `0x80xx`.
+
+`CAN_ERR_SENSOR_FAILURE = 0x0003` в Thermo-коде не является самостоятельным блокером и не должен меняться механически.
+
+### 14.4. Актуальный план
+
+Рабочий план с маркерами выполнения вынесен в `readme/THERMO_EXECUTOR_REFACTORING_PLAN.md`.
+
+---
+
+## 15. Сессия рефакторинга 08.05.2026: выполненные корректировки
+
+Статус на конец сессии: кодовая часть текущего большого рефакторинга собирается без ошибок и предупреждений. Лабораторная приемка на CANable и реальной 1-Wire шине еще не выполнялась.
+
+### 15.1. CAN transport и диагностика
+
+- [x] Очереди CAN RX/TX/dispatcher/thermo приведены к разделению ответственности.
+- [x] Dispatcher больше не выполняет прямые DS18B20 операции; доменные команды передаются владельцу 1-Wire шины, `task_temp_monitor`.
+- [x] Добавлен единый TX helper для ACK/NACK/DATA/DONE.
+- [x] Реализованы counters для `F007 GET_STATUS`: RX/TX totals, queue overflows, silent drops, mailbox timeout, HAL errors, CAN error callback, warning/passive/bus-off, last HAL error, last ESR.
+- [x] `HAL_CAN_ErrorCallback()` подключен к диагностике через CAN SCE IRQ.
+- [x] RX callback оставлен в USER CODE блоке и выполняет только короткую IRQ-операцию: чтение FIFO0, постановка кадра в очередь, учет overflow.
+- [x] Кадры с Standard ID, wrong dst, wrong type и wrong DLC отбрасываются без NACK и учитываются в диагностике.
+
+### 15.2. Service layer DDS-240
+
+- [x] Разделены NodeID Thermo `0x40` и DeviceType Thermo `0x02`.
+- [x] Реализованы `F004 GET_UID`, `F007 GET_STATUS`, `F104 GET_CHANNEL_MAP`.
+- [x] `F001 GET_DEVICE_INFO` возвращает DeviceType, firmware version, количество каналов и UID фрагментами.
+- [x] `F103/F105` сохранены как двухфазная запись 64-bit ROM ID при строгом `DLC=8`.
+
+### 15.3. Flash/config
+
+- [x] `AppConfig_t` приведен к фиксированному layout: `performer_id` хранится как 8-bit CAN NodeID.
+- [x] CRC16 конфигурации считается через `offsetof(AppConfig_t, checksum)`, строго до поля `checksum`.
+- [x] `AppConfig_SetPerformerID()` сохраняет только младший байт NodeID.
+- [ ] Последняя страница Flash пока не зарезервирована в linker script; это остается отдельным блоком.
+
+### 15.4. DS18B20 / 1-Wire domain
+
+- [x] Добавлен публичный валидатор `DS18B20_IsValidROM()`: family code `0x28` + CRC8.
+- [x] `OneWire_CRC8()` приведена к `const`-correct сигнатуре.
+- [x] `F103/F105` защищены от смешивания половин ROM разных каналов: добавлено pending-состояние с проверкой `sensor_id`.
+- [x] `F105` принимает только валидный DS18B20 ROM или пустой канал `FF FF FF FF FF FF FF FF`.
+- [x] Runtime опрос temperature mapping использует `DS18B20_IsValidROM()`, а не только проверку первого байта.
+
+### 15.5. Проверка сборки
+
+Команда проверки:
+
+```bash
+PATH=/home/andrey/st/stm32cubeide_1.19.0/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.linux64_1.0.0.202410170706/tools/bin:$PATH make -B -j14 all
+```
+
+Результат:
+
+```text
+Finished building target: STM32F103_temp_sensors.elf
+text: 36456, data: 100, bss: 10072, dec: 46628, hex: b624
+```
+
+Compiler warnings в финальном выводе сборки не обнаружены.
+
+### 15.6. Оставшаяся часть перед промышленной приемкой
+
+- [ ] Привести CAN hardware profile к эталону STM32F103: bit timing и `TransmitFifoPriority`.
+- [ ] Подтвердить запуск TIM3 для `delay_us()` в runtime.
+- [ ] Зарезервировать config Flash page в linker script.
+- [ ] Согласовать модель `TEMP_DATA.status` на уровне Executor -> Conductor -> Host.
+- [ ] Закрыть Thermo safety baseline: безопасное состояние 1-Wire, запрет ложного нормального результата при fault/stale, корректный `ACK without DONE` recovery.
+- [ ] Реализовать обязательный блок экосистемы: Thermo safe-state hook, RTOS heartbeat и IWDG supervisor.
+- [ ] Проверить watchdog idle, fault-injection зависания критической задачи и recovery/discovery после reset.
+- [ ] Выполнить лабораторную приемку с CANable и несколькими DS18B20 на одной 1-Wire шине.

@@ -4,10 +4,10 @@
 
 ## 6.1. Design Philosophy
 
-The primary goal of the parameter packing strategy is to maximize the efficiency of the CAN bus. This is achieved by minimizing the number of bytes sent for each command while maintaining clarity and alignment for easy parsing on the resource-constrained STM32F103 Executor nodes.
+The primary goal of the parameter packing strategy is to keep executor parsing deterministic and easy to validate on resource-constrained STM32F103 nodes. The executor bus uses strict `DLC=8`; efficiency is achieved by compact field layouts inside the fixed frame, with unused bytes set to zero.
 
 Key principles:
-1.  **Variable DLC**: The Data Length Code (DLC) for `COMMAND` frames is not fixed. Each command uses only the number of bytes required for its code and parameters.
+1.  **Strict executor DLC**: `Conductor <-> Executor` frames use `DLC=8`. Command tables describe used bytes; unused bytes are zero padding.
 2.  **Byte Alignment**: Multi-byte values (like `UINT16`, `INT32`) should, whenever possible, start on an even byte index (`2`, `4`, `6`) to simplify memory access on the Executor, though this is a soft rule that can be broken for higher density.
 3.  **No Unused Bytes (where possible)**: A command's defined payload should ideally not contain "Reserved" or unused bytes, but sometimes a small amount of padding is accepted for alignment or future-proofing. The payload length is defined by the command that uses it.
 
@@ -24,7 +24,13 @@ This is a high-frequency, critical command for which we must optimize packing.
 *   **Parameters**:
     *   `motor_id`: `UINT8`. Identifies the motor on the executor board. Typically a small number (e.g., 0-3).
     *   `steps`: `INT32`. The number of steps to move. This requires a full 32 bits to accommodate large movements and both positive/negative directions.
-    *   `speed`: `UINT8`. A profile or index for speed/acceleration.
+    *   `speed`: `UINT8`. Packed target/max speed for this atomic move. It is not an acceleration profile id.
+
+*   **Contract Notes**:
+    *   The Conductor owns speed selection as part of the recipe-level atomic action and packs it into the command.
+    *   The Motion Executor validates `speed` against local axis limits before starting STEP generation.
+    *   Acceleration is not carried by `MOTOR_ROTATE 0x0101`; it remains local Motion Executor motion-profile configuration implemented by the planner/driver.
+    *   For non-zero `steps`, unpacked `speed=0` is invalid. For `steps=0`, the executor may complete immediately without STEP generation.
 
 *   **Proposed Payload Structure (DLC = 8)**:
 
@@ -44,14 +50,15 @@ This command is simpler and requires fewer parameters.
 *   **Parameters**:
     *   `pump_id`: `UINT8`.
     *   `duration_ms`: `UINT32`.
+    *   `duration_ms=0` is invalid for this finite operation.
 
-*   **Proposed Payload Structure (DLC = 7)**:
+*   **Proposed Payload Structure (DLC = 8)**:
 
 | Byte(s) | Field Name      | Type     | Value/Example   | Justification                                      |
 |---------|---------------|----------|-----------------|----------------------------------------------------|
 | `0-1`   | Command Code  | `UINT16` | `0x0201`        | Identifies the `PUMP_RUN_DURATION` action.           |
 | `2`     | `pump_id`     | `UINT8`  | `0x01`          | A single byte is sufficient.                       |
 | `3-6`   | `duration_ms` | `UINT32` | `1000`          | A 32-bit unsigned integer allows for long durations (up to ~49 days), preventing overflow issues. Stored little-endian. |
-| `7`     | `reserved`    | `UINT8`  | `0x00`          | This byte is currently unused, resulting in a DLC of 7. It's explicitly reserved for future use or can be set to 0. This is an acceptable trade-off for simplicity of parser and consistency if all COMMANDs would be 8 bytes. |
+| `7`     | `reserved`    | `UINT8`  | `0x00`          | Reserved and zero-padded for strict executor DLC. |
 
-*   **Efficiency Analysis**: This structure uses a total of 7 bytes effectively. It demonstrates the use of a DLC less than 8 when not all bytes are critically needed.
+*   **Execution contract**: the Fluidics Executor turns the pump on, holds it for `duration_ms`, turns it off, then sends `DONE`. This command is the preferred primitive for recipe-level pump dosing.

@@ -46,5 +46,11 @@ bool DS18B20_ReadTemperature(DS18B20_ROM_t* rom, float* out_temp);
  */
 DS18B20_ROM_t* DS18B20_GetROM(uint8_t sensor_index);
 
+/**
+ * @brief Проверяет, что ROM принадлежит DS18B20 и имеет корректный CRC.
+ */
+bool DS18B20_IsValidROM(const DS18B20_ROM_t* rom);
+
+
 
 #endif /* DS18B20_H_ */

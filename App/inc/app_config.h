@@ -46,6 +46,9 @@
 // Очередь для передачи команд парсеру
 #define DISPATCHER_QUEUE_LEN        10
 
+// Очередь прикладных команд температурного контроллера
+#define THERMO_QUEUE_LEN            8
+
 
 // Структура для хранения полного Rx CAN-фрейма (header + data)
 typedef struct {
@@ -59,9 +62,18 @@ typedef struct {
 	uint8_t data[CAN_DATA_MAX_LEN];
     } CanTxFrame_t;
 
+// Доменная команда: Dispatcher -> Task_Temp_Monitor.
+// Dispatcher отвечает за ACK и базовую валидацию, а эта структура передает
+// прикладное задание владельцу one-wire/DS18B20 шины.
+typedef struct {
+	uint16_t cmd_code;
+	uint8_t sensor_id;
+	uint8_t data[5];
+	uint8_t data_len;
+} ThermoCommand_t;
+
 
 #endif // APP_CONFIG_H
-
 
 
 

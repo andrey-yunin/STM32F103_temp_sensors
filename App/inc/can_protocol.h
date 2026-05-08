@@ -82,6 +82,31 @@
 #define CAN_ERR_INVALID_PARAM       0x0006 // Некорректный параметр команды
 #define CAN_ERR_BUSY                0x0007 // Устройство занято выполнением другой задачи
 
+
+// ============================================================
+// Метрики GET_STATUS (0xF007): metric_id:uint16 LE + value:uint32 LE
+// ============================================================
+#define CAN_STATUS_RX_TOTAL             0x0001
+#define CAN_STATUS_TX_TOTAL             0x0002
+#define CAN_STATUS_RX_QUEUE_OVERFLOW    0x0003
+#define CAN_STATUS_TX_QUEUE_OVERFLOW    0x0004
+#define CAN_STATUS_DISPATCHER_OVERFLOW  0x0005
+#define CAN_STATUS_DROP_NOT_EXT         0x0006
+#define CAN_STATUS_DROP_WRONG_DST       0x0007
+#define CAN_STATUS_DROP_WRONG_TYPE      0x0008
+#define CAN_STATUS_DROP_WRONG_DLC       0x0009
+#define CAN_STATUS_TX_MAILBOX_TIMEOUT   0x000A
+#define CAN_STATUS_TX_HAL_ERROR         0x000B
+#define CAN_STATUS_ERROR_CALLBACK       0x000C
+#define CAN_STATUS_ERROR_WARNING        0x000D
+#define CAN_STATUS_ERROR_PASSIVE        0x000E
+#define CAN_STATUS_BUS_OFF              0x000F
+#define CAN_STATUS_LAST_HAL_ERROR       0x0010
+#define CAN_STATUS_LAST_ESR             0x0011
+#define CAN_STATUS_APP_QUEUE_OVERFLOW   0x0012
+
+
+
 // ============================================================
 // Внутренние структуры для передачи в Dispatcher
 // ============================================================
@@ -105,9 +130,9 @@ void CAN_SendData(uint16_t cmd_code, uint8_t *data, uint8_t len);
 // ============================================================
 // Типы устройств (Device Type IDs)
 // ============================================================
-#define CAN_DEVICE_TYPE_THERMO      0x40
-#define CAN_DEVICE_TYPE_MOTION      0x20
-#define CAN_DEVICE_TYPE_PUMP        0x30
+#define CAN_DEVICE_TYPE_THERMO      0x02
+#define CAN_DEVICE_TYPE_MOTION      0x01
+#define CAN_DEVICE_TYPE_PUMP        0x03
 
 // ============================================================
 // Универсальные сервисные команды (0xF0xx)
@@ -115,8 +140,11 @@ void CAN_SendData(uint16_t cmd_code, uint8_t *data, uint8_t len);
 #define CAN_CMD_SRV_GET_DEVICE_INFO  0xF001
 #define CAN_CMD_SRV_REBOOT           0xF002
 #define CAN_CMD_SRV_FLASH_COMMIT     0xF003
-#define CAN_CMD_SRV_FACTORY_RESET    0xF006 // Синхронизировано с экосистемой
+#define CAN_CMD_SRV_GET_UID          0xF004
 #define CAN_CMD_SRV_SET_NODE_ID      0xF005
+#define CAN_CMD_SRV_FACTORY_RESET    0xF006
+#define CAN_CMD_SRV_GET_STATUS       0xF007
+
 
 // ============================================================
 // Сервисные команды термодатчиков (0xF1xx)

@@ -22,10 +22,11 @@
 #include "stm32f1xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "main.h"
 #include "cmsis_os.h"
 #include "app_queues.h" // Для can_rx_queueHandle
 #include "app_config.h" // Чтобы видеть CanFrame_t
+#include "task_can_handler.h"
+
 
 
 
@@ -55,6 +56,7 @@ extern osThreadId_t task_can_handleHandle;
 extern osMessageQueueId_t can_rx_queueHandle;
 
 
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -68,6 +70,7 @@ extern osMessageQueueId_t can_rx_queueHandle;
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
+extern CAN_HandleTypeDef hcan;
 extern TIM_HandleTypeDef htim4;
 
 /* USER CODE BEGIN EV */
@@ -173,6 +176,48 @@ void DebugMon_Handler(void)
 /******************************************************************************/
 
 /**
+  * @brief This function handles USB low priority or CAN RX0 interrupts.
+  */
+void USB_LP_CAN1_RX0_IRQHandler(void)
+{
+  /* USER CODE BEGIN USB_LP_CAN1_RX0_IRQn 0 */
+
+  /* USER CODE END USB_LP_CAN1_RX0_IRQn 0 */
+  HAL_CAN_IRQHandler(&hcan);
+  /* USER CODE BEGIN USB_LP_CAN1_RX0_IRQn 1 */
+
+  /* USER CODE END USB_LP_CAN1_RX0_IRQn 1 */
+}
+
+/**
+  * @brief This function handles CAN RX1 interrupt.
+  */
+void CAN1_RX1_IRQHandler(void)
+{
+  /* USER CODE BEGIN CAN1_RX1_IRQn 0 */
+
+  /* USER CODE END CAN1_RX1_IRQn 0 */
+  HAL_CAN_IRQHandler(&hcan);
+  /* USER CODE BEGIN CAN1_RX1_IRQn 1 */
+
+  /* USER CODE END CAN1_RX1_IRQn 1 */
+}
+
+/**
+  * @brief This function handles CAN SCE interrupt.
+  */
+void CAN1_SCE_IRQHandler(void)
+{
+  /* USER CODE BEGIN CAN1_SCE_IRQn 0 */
+
+  /* USER CODE END CAN1_SCE_IRQn 0 */
+  HAL_CAN_IRQHandler(&hcan);
+  /* USER CODE BEGIN CAN1_SCE_IRQn 1 */
+
+  /* USER CODE END CAN1_SCE_IRQn 1 */
+}
+
+/**
   * @brief This function handles TIM4 global interrupt.
   */
 void TIM4_IRQHandler(void)
@@ -187,17 +232,43 @@ void TIM4_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
-// Callback-функция, вызываемая, когда в FIFO0 CAN1 появляется новое сообщение
+
+
+// Callback HAL CAN: в FIFO0 появился новый входящий CAN кадр.
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
 	CanRxFrame_t rx_frame;
-	// Извлекаем сообщение из аппаратного буфера CAN FIFO0
-	if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rx_frame.header, rx_frame.data) == HAL_OK)
-		{
-		// Помещаем весь фрейм в очередь can_rx_queue для обработки
-		osMessageQueuePut(can_rx_queueHandle, &rx_frame, 0, 0); // priority 0, timeout 0 (немедленно)
-		osThreadFlagsSet(task_can_handleHandle, FLAG_CAN_RX); // Уведомляем CAN Handler о новом фрейме
-		}
+
+	// Забираем кадр из аппаратного FIFO в IRQ-контексте и выходим
+	// без дальнейшей обработки, если HAL не смог прочитать сообщение.
+	if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rx_frame.header, rx_frame.data) != HAL_OK)
+	{
+		return;
+	}
+
+	// Передаем кадр в CAN task. Разбор протокола выполняется вне IRQ,
+	// чтобы обработчик прерывания оставался коротким и предсказуемым.
+	if (osMessageQueuePut(can_rx_queueHandle, &rx_frame, 0, 0) == osOK)
+	{
+		osThreadFlagsSet(task_can_handleHandle, FLAG_CAN_RX);
+	}
+	else
+	{
+		CAN_Diagnostics_RecordRxQueueOverflow();
+	}
+}
+
+/**
+ * @brief Callback HAL CAN для ошибок контроллера.
+ *
+ * Вызывается из CAN SCE IRQ через HAL_CAN_IRQHandler().
+ * Фиксирует HAL error flags и снимок ESR, чтобы сервисная
+ * команда диагностики CAN возвращала реальные fault-счетчики.
+ */
+void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *can_handle)
+{
+	CAN_Diagnostics_RecordCanError(HAL_CAN_GetError(can_handle),
+	                               can_handle->Instance->ESR);
 }
 
 

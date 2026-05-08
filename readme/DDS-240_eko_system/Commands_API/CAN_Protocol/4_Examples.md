@@ -53,23 +53,24 @@ This is a recipe command. The Host sends the command to the Conductor, and the C
 **Assumptions:**
 *   Host Controller Address: `0x01`
 *   Conductor Address: `0x10`
-*   Reaction Disk Executor Address: `0x30` (Executor for `WASH_STATION`)
+*   Motion Executor Address: `0x20`
+*   Fluidics Executor Address: `0x30`
 
 ### Step 1: Host sends `WASH_STATION_WASH` Command (via USB to Conductor)
 
 *   **Command Code**: `0x4000` (WASH_STATION_WASH)
 *   **Parameters**: `cycles=2`, `cuvette=5` (as defined in `User_Commands/commands.md`)
-*   **Conductor Action**: The Conductor receives this, sends ACK via USB, then translates these high-level parameters into low-level motor steps and pump durations using `param_translator` for the `Reaction Disk Executor`.
+*   **Conductor Action**: The Conductor receives this, sends ACK via USB, then translates high-level parameters into low-level motor steps and pump durations using calibration and `param_translator`.
 
 ### Step 2: Conductor orchestrates Low-Level CAN Communication with Executor
 
-(This involves multiple low-level CAN frames between the Conductor and the Reaction Disk Executor. For example, to rotate to cuvette 5 and perform wash cycles, the Conductor might send several `MOTOR_ROTATE` and `PUMP_RUN_DURATION` commands to the `Reaction Disk Executor` and wait for `DONE` from each before proceeding.)
+(This involves multiple low-level CAN frames between the Conductor and Executors. For example, the Conductor sends `MOTOR_ROTATE` to the Motion Executor, calculates pump `duration_ms` from the requested volume/calibration, sends `PUMP_RUN_DURATION` to the Fluidics Executor, and waits for `DONE` from each atomic command before proceeding.)
 
 **Example Low-Level Sequence (Conductor -> Executor for part of the recipe):**
 
-*   **Conductor sends `MOTOR_ROTATE` (0x0101) Command to Reaction Disk Executor (0x30)**
-    *   **CAN ID**: `0x00301000`
-    *   **DLC**: `8` <-- **CORRECTED HERE**
+*   **Conductor sends `MOTOR_ROTATE` (0x0101) Command to Motion Executor (0x20)**
+    *   **CAN ID**: `0x00201000`
+    *   **DLC**: `8`
     *   **Payload Parameters**:
         | Byte(s) | Parameter  | Type    | Value   | Description                                      |
         |---------|------------|---------|---------|--------------------------------------------------|
@@ -78,23 +79,31 @@ This is a recipe command. The Host sends the command to the Conductor, and the C
         | `3-6`   | `steps`    | `INT32` | `-500`  | Number of steps (Little-Endian).                 |
         | `7`     | `speed`    | `UINT8` | `0x0A`  | Speed profile/setting.                           |
 
-*   **Reaction Disk Executor sends `ACK` to Conductor**
-    *   **CAN ID**: `0x05103000`
-    *   **DLC**: `4`
+*   **Motion Executor sends `ACK` to Conductor**
+    *   **CAN ID**: `0x05102000`
+    *   **DLC**: `8`
     *   **Payload Parameters**:
         | Byte(s) | Parameter  | Type    | Value   | Description                                      |
         |---------|------------|---------|---------|--------------------------------------------------|
         | `0-1`   | Command Code | `UINT16`| `0x0101`| Acknowledged command.                            |
         | `2-3`   | Error Code | `UINT16`| `0x0000`| No error.                                        |
 
-*   **Reaction Disk Executor sends `DONE` to Conductor**
-    *   **CAN ID**: `0x07103000`
-    *   **DLC**: `3`
+*   **Motion Executor sends `DONE` to Conductor after the movement has physically completed**
+    *   **CAN ID**: `0x07102000`
+    *   **DLC**: `8`
     *   **Payload Parameters**:
         | Byte(s) | Parameter  | Type    | Value   | Description                                      |
         |---------|------------|---------|---------|--------------------------------------------------|
         | `0`     | Sub-Type   | `UINT8` | `0x01`  | `DONE` message.                                  |
         | `1-2`   | Command Code | `UINT16`| `0x0101`| Completed command.                               |
+        | `3-7`   | Padding/status | - | `0x00...` | Domain-specific status/padding.               |
+
+*   **Conductor sends `PUMP_RUN_DURATION` (0x0201) Command to Fluidics Executor (0x30)**
+    *   **CAN ID**: `0x00301000`
+    *   **DLC**: `8`
+    *   **Payload example**: `01 02 00 D0 07 00 00 00` = pump 0, 2000 ms.
+
+*   **Fluidics Executor sends `DONE` only after the pump has run for 2000 ms and has been switched OFF.**
 
 (This sequence repeats for other low-level actions required to complete the `WASH_STATION_WASH` recipe.)
 

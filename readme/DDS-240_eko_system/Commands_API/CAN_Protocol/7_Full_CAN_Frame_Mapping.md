@@ -26,17 +26,17 @@ All CAN frames discussed here adhere to:
 *   **CAN Standard**: Classical CAN
 *   **Bit Rate**: 1 Mbit/s
 *   **CAN ID**: 29-bit Extended, structured as defined in `2_Frame_Format.md`.
-*   **Payload**: Variable DLC (up to 8 bytes), packed efficiently as per `6_Parameter_Packing.md`.
+*   **Payload**: strict `DLC=8` on the executor CAN bus. Used bytes are packed as per `6_Parameter_Packing.md`; unused bytes are zero-padded.
 
 ---
 
 ## 7.3. Detailed Frame Mappings
 
-### Scenario 1: Conductor sends `MOTOR_ROTATE (0x0101)` Command to Reaction Disk Executor
+### Scenario 1: Conductor sends `MOTOR_ROTATE (0x0101)` Command to Motion Executor
 
 **Purpose**: Command a motor to rotate by a specific number of steps.
 **Low-Level Command Code**: `0x0101` (from `5_Low_Level_Commands.md`)
-**Target Executor Address**: `0x30` (Reaction Disk Executor)
+**Target Executor Address**: `0x20` (Motion Executor)
 **Source Address**: `0x10` (Conductor)
 **Parameters**: `motor_id = 0x00`, `steps = -500 (0xFFFFFE0C)`, `speed = 0x0A`
 
@@ -46,10 +46,10 @@ All CAN frames discussed here adhere to:
 |------------|--------|--------------------|----------------|-------------|-----------------------------|
 | 28-26      | 3 bits | Priority           | `000`          | `0`         | Highest priority command    |
 | 25-24      | 2 bits | Message Type       | `00`           | `0`         | `COMMAND`                   |
-| 23-16      | 8 bits | Destination Address| `00110000`     | `30`        | `0x30` (Reaction Disk Executor) |
+| 23-16      | 8 bits | Destination Address| `00100000`     | `20`        | `0x20` (Motion Executor) |
 | 15-8       | 8 bits | Source Address     | `00010000`     | `10`        | `0x10` (Conductor)          |
 | 7-0        | 8 bits | Reserved           | `00000000`     | `00`        | Must be 0                   |
-| **Full 29-bit ID** | | | | `0x00301000`|                             |
+| **Full 29-bit ID** | | | | `0x00201000`|                             |
 
 #### **Payload Construction (DLC = 8)**
 
@@ -67,7 +67,7 @@ All CAN frames discussed here adhere to:
 
 **Purpose**: Acknowledge successful receipt and parsing of `MOTOR_ROTATE`.
 **Acknowledged Command Code**: `0x0101`
-**Source Address**: `0x30` (Reaction Disk Executor)
+**Source Address**: `0x20` (Motion Executor)
 **Destination Address**: `0x10` (Conductor)
 **Error Code**: `0x0000` (No error)
 
@@ -78,17 +78,18 @@ All CAN frames discussed here adhere to:
 | 28-26      | 3 bits | Priority           | `001`          | `1`         | Normal priority response    |
 | 25-24      | 2 bits | Message Type       | `01`           | `1`         | `ACK`                       |
 | 23-16      | 8 bits | Destination Address| `00010000`     | `10`        | `0x10` (Conductor)          |
-| 15-8       | 8 bits | Source Address     | `00110000`     | `30`        | `0x30` (Reaction Disk Executor) |
+| 15-8       | 8 bits | Source Address     | `00100000`     | `20`        | `0x20` (Motion Executor) |
 | 7-0        | 8 bits | Reserved           | `00000000`     | `00`        | Must be 0                   |
-| **Full 29-bit ID** | | | | `0x05103000`|                             |
+| **Full 29-bit ID** | | | | `0x05102000`|                             |
 
-#### **Payload Construction (DLC = 4)**
+#### **Payload Construction (DLC = 8)**
 
 | Byte(s) | Field Name      | Type    | Value (hex) | Description                                       |
 |---------|-----------------|---------|-------------|---------------------------------------------------|
 | `0-1`   | Command Code    | `UINT16`| `01 01`     | `0x0101` (MOTOR_ROTATE) - Little-Endian           |
 | `2-3`   | Error Code      | `UINT16`| `00 00`     | No error                                          |
-| **Full Payload** | | | `01 01 00 00` |                                                   |
+| `4-7`   | Padding         | -       | `00 00 00 00` | Zero padding                                    |
+| **Full Payload** | | | `01 01 00 00 00 00 00 00` |                                           |
 
 ---
 
@@ -96,7 +97,7 @@ All CAN frames discussed here adhere to:
 
 **Purpose**: Signal completion of `MOTOR_ROTATE`.
 **Completed Command Code**: `0x0101`
-**Source Address**: `0x30` (Reaction Disk Executor)
+**Source Address**: `0x20` (Motion Executor)
 **Destination Address**: `0x10` (Conductor)
 
 #### **CAN ID Construction**
@@ -106,17 +107,18 @@ All CAN frames discussed here adhere to:
 | 28-26      | 3 bits | Priority           | `001`          | `1`         | Normal priority response    |
 | 25-24      | 2 bits | Message Type       | `11`           | `3`         | `DATA`/`DONE`/`LOG`         |
 | 23-16      | 8 bits | Destination Address| `00010000`     | `10`        | `0x10` (Conductor)          |
-| 15-8       | 8 bits | Source Address     | `00110000`     | `30`        | `0x30` (Reaction Disk Executor) |
+| 15-8       | 8 bits | Source Address     | `00100000`     | `20`        | `0x20` (Motion Executor) |
 | 7-0        | 8 bits | Reserved           | `00000000`     | `00`        | Must be 0                   |
-| **Full 29-bit ID** | | | | `0x07103000`|                             |
+| **Full 29-bit ID** | | | | `0x07102000`|                             |
 
-#### **Payload Construction (DLC = 3)**
+#### **Payload Construction (DLC = 8)**
 
 | Byte(s) | Field Name      | Type    | Value (hex) | Description                                       |
 |---------|-----------------|---------|-------------|---------------------------------------------------|
 | `0`     | Sub-Type        | `UINT8` | `01`        | `0x01` (DONE)                                     |
 | `1-2`   | Command Code    | `UINT16`| `01 01`     | `0x0101` (MOTOR_ROTATE) - Little-Endian           |
-| **Full Payload** | | | `01 01 01` |                                                   |
+| `3-7`   | Padding/status  | -       | `00 00 00 00 00` | Domain status or zero padding                 |
+| **Full Payload** | | | `01 01 01 00 00 00 00 00` |                                      |
 
 ---
 
@@ -124,7 +126,7 @@ All CAN frames discussed here adhere to:
 
 **Purpose**: Signal an error in executing `MOTOR_ROTATE`.
 **Acknowledged Command Code**: `0x0101`
-**Source Address**: `0x30` (Reaction Disk Executor)
+**Source Address**: `0x20` (Motion Executor)
 **Destination Address**: `0x10` (Conductor)
 **Error Code**: `0x0001` (Example: Invalid Motor ID)
 
@@ -135,17 +137,18 @@ All CAN frames discussed here adhere to:
 | 28-26      | 3 bits | Priority           | `001`          | `1`         | Normal priority response    |
 | 25-24      | 2 bits | Message Type       | `10`           | `2`         | `NACK`                      |
 | 23-16      | 8 bits | Destination Address| `00010000`     | `10`        | `0x10` (Conductor)          |
-| 15-8       | 8 bits | Source Address     | `00110000`     | `30`        | `0x30` (Reaction Disk Executor) |
+| 15-8       | 8 bits | Source Address     | `00100000`     | `20`        | `0x20` (Motion Executor) |
 | 7-0        | 8 bits | Reserved           | `00000000`     | `00`        | Must be 0                   |
-| **Full 29-bit ID** | | | | `0x06103000`|                             |
+| **Full 29-bit ID** | | | | `0x06102000`|                             |
 
-#### **Payload Construction (DLC = 4)**
+#### **Payload Construction (DLC = 8)**
 
 | Byte(s) | Field Name      | Type    | Value (hex) | Description                                       |
 |---------|-----------------|---------|-------------|---------------------------------------------------|
 | `0-1`   | Command Code    | `UINT16`| `01 01`     | `0x0101` (MOTOR_ROTATE) - Little-Endian           |
 | `2-3`   | Error Code      | `UINT16`| `01 00`     | `0x0001` (Invalid Motor ID) - Little-Endian       |
-| **Full Payload** | | | `01 01 01 00` |                                                   |
+| `4-7`   | Padding         | -       | `00 00 00 00` | Zero padding                                    |
+| **Full Payload** | | | `01 01 01 00 00 00 00 00` |                                           |
 
 ---
 
@@ -167,14 +170,15 @@ All CAN frames discussed here adhere to:
 | 7-0        | 8 bits | Reserved           | `00000000`     | `00`        | Must be 0                   |
 | **Full 29-bit ID** | | | | `0x07103000`|                             |
 
-#### **Payload Construction (DLC = 4)**
+#### **Payload Construction (DLC = 8)**
 
 | Byte(s) | Field Name      | Type    | Value (hex) | Description                                       |
 |---------|-----------------|---------|-------------|---------------------------------------------------|
 | `0`     | Sub-Type        | `UINT8` | `02`        | `0x02` (DATA)                                     |
 | `1`     | Sequence Info   | `UINT8` | `80`        | Sequence 0, End of Transmission                   |
 | `2-3`   | Temperature     | `INT16` | `FF 00`     | `25.5` (255 x 0.1°C) - Little-Endian              |
-| **Full Payload** | | | `02 80 FF 00` |                                                   |
+| `4-7`   | Padding         | -       | `00 00 00 00` | Zero padding                                    |
+| **Full Payload** | | | `02 80 FF 00 00 00 00 00` |                                           |
 
 ---
 
@@ -196,14 +200,15 @@ All CAN frames discussed here adhere to:
 | 7-0        | 8 bits | Reserved           | `00000000`     | `00`        | Must be 0                   |
 | **Full 29-bit ID** | | | | `0x07103000`|                             |
 
-#### **Payload Construction (DLC = 6)**
+#### **Payload Construction (DLC = 8)**
 
 | Byte(s) | Field Name      | Type    | Value (hex) | Description                                       |
 |---------|-----------------|---------|-------------|---------------------------------------------------|
 | `0`     | Sub-Type        | `UINT8` | `03`        | `0x03` (LOG)                                      |
 | `1`     | Log Level       | `UINT8` | `02`        | `0x02` (WARN)                                     |
 | `2-5`   | Log Message     | `STRING`| `57 61 72 6E` | "Warn" (UTF-8, up to 6 bytes)                     |
-| **Full Payload** | | | `03 02 57 61 72 6E` |                                                   |
+| `6-7`   | Padding         | -       | `00 00`     | Zero padding                                      |
+| **Full Payload** | | | `03 02 57 61 72 6E 00 00` |                                             |
 
 ---
 
