@@ -52,5 +52,14 @@ DS18B20_ROM_t* DS18B20_GetROM(uint8_t sensor_index);
 bool DS18B20_IsValidROM(const DS18B20_ROM_t* rom);
 
 
+/**
+ * @brief Отпускает 1-Wire шину в idle/high-Z состояние.
+ *
+ * Для Thermo safe-state это базовое безопасное действие:
+ * исполнитель не имеет силовых выходов, поэтому аварийный выход
+ * означает "не держать 1-Wire bus в LOW".
+ */
+void DS18B20_BusRelease(void);
+
 
 #endif /* DS18B20_H_ */

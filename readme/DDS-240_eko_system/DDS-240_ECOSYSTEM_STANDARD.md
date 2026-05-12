@@ -75,6 +75,7 @@
 *   **ID Format**: 29-bit Extended ID.
 *   **Addressing**: Динамический `NodeID` (0x02..0x7F). Адрес `0x10` зарезервирован за Дирижером.
 *   **Reference Timing**: STM32F103 executor profile verified at APB1=32 MHz, Prescaler=2, BS1=11TQ, BS2=4TQ, SJW=1TQ, sample point 75%.
+*   **Reference HAL Profile**: STM32 bxCAN Executor profile uses `CAN_MODE_NORMAL`, `TimeTriggeredMode=DISABLE`, `AutoBusOff=DISABLE`, `AutoWakeUp=DISABLE`, `AutoRetransmission=DISABLE`, `ReceiveFifoLocked=DISABLE`, `TransmitFifoPriority=ENABLE`.
 
 ### 2.2. Фильтрация и надежность
 *   **Broadcast**: Каждое устройство ОБЯЗАНО принимать сообщения с `DstAddr = 0x00`.
@@ -453,9 +454,16 @@ BS1 = 11TQ
 BS2 = 4TQ
 SJW = 1TQ
 sample point = 75%
+Mode = NORMAL
+TimeTriggeredMode = DISABLE
+AutoBusOff = DISABLE
+AutoWakeUp = DISABLE
+AutoRetransmission = DISABLE
+ReceiveFifoLocked = DISABLE
 TransmitFifoPriority = ENABLE
-AutoRetransmission = ENABLE
 ```
+
+Для STM32CubeIDE/CubeMX это требование проверяется в двух местах: `.ioc` должен содержать `CAN.Prescaler=2`, `CAN.BS1=CAN_BS1_11TQ`, `CAN.BS2=CAN_BS2_4TQ`, `CAN.TXFP=ENABLE`, а сгенерированный `MX_CAN_Init()` должен содержать тот же профиль HAL. Если CubeMX пересоздает `main.c`, профиль проверяется повторно перед коммитом.
 
 Локально в проекте остаются:
 

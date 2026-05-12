@@ -190,10 +190,27 @@ STM32F103_step_motors_refactored
 Для STM32 bxCAN:
 
 ```c
+hcan.Init.Prescaler = 2;
+hcan.Init.Mode = CAN_MODE_NORMAL;
+hcan.Init.SyncJumpWidth = CAN_SJW_1TQ;
+hcan.Init.TimeSeg1 = CAN_BS1_11TQ;
+hcan.Init.TimeSeg2 = CAN_BS2_4TQ;
+hcan.Init.TimeTriggeredMode = DISABLE;
+hcan.Init.AutoBusOff = DISABLE;
+hcan.Init.AutoWakeUp = DISABLE;
+hcan.Init.AutoRetransmission = DISABLE;
+hcan.Init.ReceiveFifoLocked = DISABLE;
 hcan.Init.TransmitFifoPriority = ENABLE;
 ```
 
-Это обязательно. Без этого `DONE` может обогнать последние DATA-кадры в многокадровом ответе.
+Этот профиль обязателен для STM32F103 Executor-плат с APB1=32 MHz. Он дает `1 Mbit/s`, 16 time quanta на бит и sample point `75%`. Без `TransmitFifoPriority = ENABLE` `DONE` может обогнать последние DATA-кадры в многокадровом ответе.
+
+После настройки через CubeMX проверить:
+
+*   `.ioc`: `CAN.Prescaler=2`, `CAN.BS1=CAN_BS1_11TQ`, `CAN.BS2=CAN_BS2_4TQ`, `CAN.CalculateBaudRate=1000000`, `CAN.TXFP=ENABLE`.
+*   `Core/Src/main.c`: `MX_CAN_Init()` содержит тот же HAL-профиль.
+*   Сборка проходит без ошибок.
+*   CANable/SocketCAN видит стабильный обмен на `1 Mbit/s`.
 
 Перед `HAL_CAN_AddTxMessage()` нужен mailbox guard:
 

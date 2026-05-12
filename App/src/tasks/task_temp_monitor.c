@@ -55,6 +55,24 @@ static bool TempMonitor_IsEmptyROM(const DS18B20_ROM_t* rom)
 	return true;
 }
 
+static bool TempMonitor_IsActiveMappedChannel(uint8_t sensor_id)
+{
+	DS18B20_ROM_t mapped_rom;
+
+	if (sensor_id >= DS18B20_MAX_SENSORS) {
+		return false;
+	}
+
+	/*
+	 * Active/mapped канал - это логический канал, в котором сохранен
+	 * валидный ROM DS18B20: family code 0x28 + корректный CRC8.
+	 *
+	 * Пустой канал FF..FF автоматически не проходит DS18B20_IsValidROM().
+	 */
+	AppConfig_GetSensorROM(sensor_id, &mapped_rom);
+	return DS18B20_IsValidROM(&mapped_rom);
+}
+
 
 static void TempMonitor_SetTemperature(uint8_t index, float value)
 {
@@ -68,41 +86,78 @@ static void TempMonitor_SetTemperature(uint8_t index, float value)
 
 static void TempMonitor_SendTemperature(uint16_t cmd_code, uint8_t sensor_id)
 {
-	float raw_t = TempMonitor_GetTemperature(sensor_id);
+	if (!TempMonitor_IsActiveMappedChannel(sensor_id)) {
+  		/*
+  		 * Канал существует как индекс, но не является привязанным
+  		 * температурным каналом. Это low-level SENSOR_FAILURE,
+  		 * а не Host-level TEMP_DATA.status.
+  		 */
+  		CAN_SendNack(cmd_code, CAN_ERR_SENSOR_FAILURE);
+  		return;
+  	}
 
-	if (raw_t > -100.0f) {
-		// Формат температуры: int16, десятые доли градуса Celsius, little-endian.
-		int16_t tx_val = (int16_t)(raw_t * 10.0f);
-		uint8_t data[2];
-		data[0] = (uint8_t)(tx_val & 0xFF);
-		data[1] = (uint8_t)((tx_val >> 8) & 0xFF);
+  	float raw_t = TempMonitor_GetTemperature(sensor_id);
 
-		CAN_SendData(cmd_code, data, sizeof(data));
-		CAN_SendDone(cmd_code, sensor_id);
-		}
-	else {
-		// Канал существует, но последнего валидного измерения нет.
-		CAN_SendNack(cmd_code, CAN_ERR_SENSOR_FAILURE);
-		}
+  	if (raw_t > -100.0f) {
+  		// Формат температуры: int16, десятые доли градуса Celsius, little-endian.
+  		int16_t tx_val = (int16_t)(raw_t * 10.0f);
+  		uint8_t data[2];
+
+  		data[0] = (uint8_t)(tx_val & 0xFF);
+  		data[1] = (uint8_t)((tx_val >> 8) & 0xFF);
+
+  		CAN_SendData(cmd_code, data, sizeof(data));
+  		CAN_SendDone(cmd_code, sensor_id);
+  	}
+  	else {
+  		// Канал active/mapped, но валидного измерения сейчас нет.
+  		CAN_SendNack(cmd_code, CAN_ERR_SENSOR_FAILURE);
+  	}
 }
+
 
 static void TempMonitor_SendAllTemperatures(uint16_t cmd_code)
 {
-	for (uint8_t i = 0; i < DS18B20_MAX_SENSORS; i++) {
-		float t = TempMonitor_GetTemperature(i);
+	uint8_t active_count = 0U;
+  	uint8_t valid_count = 0U;
 
-		if (t > -100.0f) {
-			int16_t tx_v = (int16_t)(t * 10.0f);
-			uint8_t data[3];
-			data[0] = i;
-			data[1] = (uint8_t)(tx_v & 0xFF);
-			data[2] = (uint8_t)((tx_v >> 8) & 0xFF);
-			CAN_SendData(cmd_code, data, sizeof(data));
-			}
-		}
+  	for (uint8_t i = 0; i < DS18B20_MAX_SENSORS; i++) {
+  		if (!TempMonitor_IsActiveMappedChannel(i)) {
+  			continue;
+  		}
 
-	CAN_SendDone(cmd_code, 0xFF);
+  		active_count++;
+
+  		float t = TempMonitor_GetTemperature(i);
+
+  		if (t > -100.0f) {
+  			int16_t tx_v = (int16_t)(t * 10.0f);
+  			uint8_t data[3];
+
+  			data[0] = i;
+  			data[1] = (uint8_t)(tx_v & 0xFF);
+  			data[2] = (uint8_t)((tx_v >> 8) & 0xFF);
+
+  			CAN_SendData(cmd_code, data, sizeof(data));
+  			valid_count++;
+  		}
+  	}
+
+  	/*
+  	 * DONE по GET_ALL означает: команда обработана, и передан
+  	 * хотя бы один валидный результат по active/mapped каналам.
+  	 *
+  	 * Отсутствующие active/mapped каналы Дирижер переведет
+  	 * в Host TEMP_DATA.status = 3.
+  	 */
+  	if (active_count > 0U && valid_count > 0U) {
+  		CAN_SendDone(cmd_code, 0xFF);
+  	}
+  	else {
+  		CAN_SendNack(cmd_code, CAN_ERR_SENSOR_FAILURE);
+  	}
 }
+
 
 static void TempMonitor_SendPhysId(uint16_t cmd_code, uint8_t sensor_id)
 {

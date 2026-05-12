@@ -429,11 +429,67 @@ cansend can0 00301000#07F0000000000000
 3. **DATA (0x02)**: Исполнитель отправляет значение температуры (инт16, 0.1°С).
 4. **DONE (0x01)**: Дирижер ожидает сигнал завершения в течение **100 мс** после ACK.
 
+### 7.5.1. Контракт `DONE/NACK` для температурных команд
+
+Thermo Executor не формирует Host-level `TEMP_DATA.status = 0..3` и не принимает решений `normal/overheat/underheat`. Эти статусы принадлежат Дирижеру, потому что зависят от технологических порогов, recipe context, freshness policy и mapping/cache.
+
+Thermo Executor отвечает только за low-level результат: корректность команды, доступность доменного ресурса, наличие active/mapped канала, успешность 1-Wire read и CRC.
+
+`active/mapped channel` означает, что логический канал имеет привязанный ROM ID в mapping table, ROM не является пустым `FF FF FF FF FF FF FF FF`, имеет family code DS18B20 `0x28` и проходит CRC8 ROM.
+
+Для `GET_TEMP (0x9011)`:
+
+| Условие | Ответ Thermo Executor | Действие Дирижера |
+|:--------|:----------------------|:------------------|
+| `sensor_id` вне диапазона `0..7` | `ACK -> NACK INVALID_SENSOR_ID` | Завершить low-level операцию ошибкой маршрутизации/запроса. |
+| Канал не active/mapped | `ACK -> NACK SENSOR_FAILURE` | Для Host-запроса конкретного датчика вернуть ошибку операции или `TEMP_DATA.status = 3` по policy команды. |
+| 1-Wire read/CRC failed, датчик отсутствует, нет валидного значения | `ACK -> NACK SENSOR_FAILURE` | Пометить канал как fault/stale в cache; для Host temperature data использовать `status = 3`, если команда допускает частичный/канальный ответ. |
+| Канал дал валидную температуру | `ACK -> DATA(temp) -> DONE` | Обновить cache, затем сформировать Host `TEMP_DATA.status` по технологическим порогам. |
+
+Для `GET_ALL_TEMPS (0x9010)`:
+
+| Условие | Ответ Thermo Executor | Действие Дирижера |
+|:--------|:----------------------|:------------------|
+| Есть active/mapped каналы и хотя бы один дал валидную температуру | `ACK -> DATA(valid channels...) -> DONE` | Сравнить полученные `sensor_id` со списком expected active/mapped каналов; отсутствующим каналам назначить Host `TEMP_DATA.status = 3`. |
+| Active/mapped каналы есть, но ни один не дал валидной температуры | `ACK -> NACK SENSOR_FAILURE` | Считать low-level снимок неуспешным; применить retry/fault policy и/или вернуть Host ошибку операции. |
+| Active/mapped каналов нет | `ACK -> NACK SENSOR_FAILURE` | Считать Thermo data unavailable/misconfigured; выполнить service/mapping recovery. |
+| Доменная задача занята или queue overflow | `ACK -> NACK THERMO_BUSY` | Повторить по retry policy или завершить операцию ошибкой. |
+
+После `NACK` Thermo Executor не отправляет `DONE`. `DONE` означает, что команда достигла своего нормального low-level постусловия:
+
+- для `GET_TEMP` передана валидная температура запрошенного канала;
+- для `GET_ALL_TEMPS` передан снимок всех доступных валидных active/mapped каналов, причем валидных каналов не меньше одного.
+
+### 7.5.2. Формирование Host `TEMP_DATA.status`
+
+Host API `TEMP_DATA.status` формирует Дирижер, а не Thermo Executor.
+
+Правила формирования:
+
+| Host status | Источник решения |
+|:------------|:-----------------|
+| `0` normal | Валидная свежая температура находится в допустимых технологических пределах. |
+| `1` overheat | Валидная свежая температура выше верхнего порога текущего recipe/system context. |
+| `2` underheat | Валидная свежая температура ниже нижнего порога текущего recipe/system context. |
+| `3` error | Канал expected active/mapped, но нет валидной свежей температуры: `SENSOR_FAILURE`, отсутствующий DATA в `GET_ALL_TEMPS`, stale cache, missing sensor, 1-Wire read/CRC fault. |
+
+Не переводятся в `TEMP_DATA.status = 3` отдельного канала:
+
+- `INVALID_SENSOR_ID`;
+- `UNKNOWN_CMD`;
+- `THERMO_BUSY` после исчерпания retry policy;
+- service-команды `INVALID_KEY`, `FLASH_WRITE`, `INVALID_PARAM`;
+- transport/protocol timeout (`ACK timeout`, `DONE timeout`);
+- wrong NodeID/UID/DeviceType.
+
+Эти события являются ошибками операции, маршрутизации, сервиса или связи на стороне Дирижера.
+
 ## 7.6. Требования к валидации на стороне Дирижера
 
 ### 7.6.1. Формат данных (Data Representation)
 - Значение температуры `37.5°C` передается как `375` (`0x0177`). Тип `int16_t`.
 - При `GET_ALL_TEMPS (0x9010)` приходят кадры DATA: байт 2 — индекс, байты 3-4 — значение. **DLC ответа всегда 8.**
+- Thermo Executor-level DATA не содержит Host `TEMP_DATA.status`. Host-level status добавляет Дирижер после применения mapping/cache/freshness/threshold policy.
 
 ### 7.6.2. Сервисный аудит (Discovery)
 При включении Дирижер отправляет `0xF001 (Get Info)`.

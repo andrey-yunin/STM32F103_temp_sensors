@@ -1,6 +1,6 @@
 # Thermo Executor Refactoring Plan
 
-Дата обновления: 08.05.2026
+Дата обновления: 12.05.2026
 Проект: `STM32F103_temp_sensors`
 
 Цель: довести Thermo Executor до промышленного стандарта DDS-240 без изменения общих правил экосистемы под специфику одной платы. Все изменения выполняются блоками: пояснение -> код -> сборка -> фиксация результата.
@@ -113,11 +113,20 @@ PATH=/home/andrey/st/stm32cubeide_1.19.0/plugins/com.st.stm32cube.ide.mcu.extern
 
 ### Блок E: CAN hardware profile
 
-- [ ] Привести CAN bit timing к эталону STM32F103 экосистемы.
-- [ ] Проверить APB1 clock и расчет 1 Mbit/s.
-- [ ] Включить `TransmitFifoPriority = ENABLE`, если это подтвержденный общий стандарт для порядка `ACK -> DATA... -> DONE`.
-- [ ] Проверить, что изменение сделано через Cube или сохранено в корректных USER/Cube-controlled местах.
-- [ ] Сборка проекта.
+- [x] Привести CAN bit timing к эталону STM32F103 экосистемы.
+- [x] Проверить APB1 clock и расчет 1 Mbit/s.
+- [x] Включить `TransmitFifoPriority = ENABLE`, если это подтвержденный общий стандарт для порядка `ACK -> DATA... -> DONE`.
+- [x] Проверить, что изменение сделано через Cube или сохранено в корректных USER/Cube-controlled местах.
+- [x] Сборка проекта.
+
+Статус 12.05.2026:
+
+- [x] `STM32F103_temp_sensors.ioc` обновлен через CubeMX: `Prescaler=2`, `BS1=11TQ`, `BS2=4TQ`, `TXFP=ENABLE`.
+- [x] `Core/Src/main.c` сгенерирован с профилем `Prescaler=2`, `CAN_BS1_11TQ`, `CAN_BS2_4TQ`, `TransmitFifoPriority=ENABLE`.
+- [x] APB1 остается `32 MHz`; расчет: `32 MHz / (2 * (1 + 11 + 4)) = 1 Mbit/s`, sample point `75%`.
+- [x] Профиль совпадает с Motion Executor и Fluidics Executor.
+- [x] Сборка после CubeMX-генерации подтверждена пользователем.
+- [~] CubeMX нормализовал окончания строк в `Core/Src/stm32f1xx_it.c` и `Core/Inc/stm32f1xx_it.h`; функциональных изменений в этих файлах не выявлено.
 
 Приемка:
 
@@ -126,11 +135,19 @@ PATH=/home/andrey/st/stm32cubeide_1.19.0/plugins/com.st.stm32cube.ide.mcu.extern
 
 ### Блок F: TIM3 / 1-Wire runtime
 
-- [ ] Подтвердить, стартует ли TIM3 до первого вызова `delay_us()`.
-- [ ] Если старта нет, добавить `HAL_TIM_Base_Start(&htim3)` в корректный USER CODE блок после init периферии.
+- [x] Подтвердить, стартует ли TIM3 до первого вызова `delay_us()`.
+- [x] Если старта нет, добавить `HAL_TIM_Base_Start(&htim3)` в корректный USER CODE блок после init периферии.
 - [ ] Проверить `F101` scan на реальной 1-Wire шине с несколькими DS18B20.
 - [ ] Проверить `F102` для каждого найденного ROM.
-- [ ] Сборка проекта.
+- [x] Сборка проекта.
+
+Статус 12.05.2026:
+
+- [x] До правки `HAL_TIM_Base_Start(&htim3)` в проекте отсутствовал; `delay_us()` мог зависнуть, если TIM3 не был запущен.
+- [x] Запуск TIM3 добавлен в `Core/Src/main.c` внутри `USER CODE BEGIN TIM3_Init 2`, после полной HAL-настройки TIM3.
+- [x] TIM3 настроен на микросекундную базу: `APB1 timer clock = 64 MHz`, `Prescaler = 63`, следовательно `1 tick = 1 us`.
+- [x] Аудит вставки подтвержден: код находится в USER CODE блоке функции `MX_TIM3_Init()` и не должен стираться CubeMX.
+- [x] Сборка после добавления старта TIM3 подтверждена пользователем.
 
 Приемка:
 
@@ -140,11 +157,19 @@ PATH=/home/andrey/st/stm32cubeide_1.19.0/plugins/com.st.stm32cube.ide.mcu.extern
 
 ### Блок G: Flash/config protection
 
-- [ ] Зарезервировать последнюю Flash page в linker script.
-- [ ] Проверить, что firmware image не занимает `APP_CONFIG_FLASH_ADDR = 0x0800FC00`.
+- [x] Зарезервировать последнюю Flash page в linker script.
+- [~] Проверить, что firmware image не занимает `APP_CONFIG_FLASH_ADDR = 0x0800FC00`.
 - [ ] Проверить `F003 + reboot`: mapping сохраняется.
 - [ ] Проверить `F006 + reboot`: плата возвращается к default NodeID `0x40` и пустому mapping.
-- [ ] Сборка проекта.
+- [x] Сборка проекта.
+
+Статус 12.05.2026:
+
+- [x] `APP_CONFIG_FLASH_ADDR` в `App/inc/app_flash.h` указывает на последнюю страницу STM32F103C8: `0x0800FC00`.
+- [x] `STM32F103C8TX_FLASH.ld` ограничивает application FLASH до `63K`, поэтому диапазон `0x0800FC00..0x0800FFFF` исключен из области компоновки приложения.
+- [x] Это защищает код/rodata от стирания при `AppConfig_Commit()` и `AppConfig_FactoryReset()`.
+- [~] После CubeMX regeneration linker script нужно проверять повторно: CubeIDE может вернуть `FLASH LENGTH = 64K` при пересоздании/миграции проекта.
+- [x] Сборка после изменения linker script подтверждена пользователем.
 
 Приемка:
 
@@ -153,28 +178,49 @@ PATH=/home/andrey/st/stm32cubeide_1.19.0/plugins/com.st.stm32cube.ide.mcu.extern
 
 ### Блок H: Fault/status contract
 
-- [ ] Согласовать, где формируется Host-level `TEMP_DATA.status`: Executor, Conductor cache/mapping или Host aggregation.
-- [ ] Описать соответствие Thermo NACK/канального состояния к Host statuses.
-- [ ] Определить поведение при stale value, CRC error, missing ROM, 1-Wire timeout.
-- [ ] После согласования обновить код только в пределах утвержденного контракта.
+- [x] Согласовать, где формируется Host-level `TEMP_DATA.status`: Executor, Conductor cache/mapping или Host aggregation.
+- [x] Описать соответствие Thermo NACK/канального состояния к Host statuses.
+- [x] Определить поведение при stale value, CRC error, missing ROM, 1-Wire timeout.
+- [x] После согласования обновить код только в пределах утвержденного контракта.
+
+Согласованный контракт 12.05.2026:
+
+- [x] Thermo Executor не формирует Host-level `TEMP_DATA.status = 0..3` и не принимает решений `normal/overheat/underheat`.
+- [x] `TEMP_DATA.status` формирует Дирижер, потому что только он знает технологические пороги, recipe context, mapping/cache и freshness policy.
+- [x] Thermo Executor отвечает только за low-level результат: корректность команды, доступность доменного ресурса, наличие active/mapped канала, успешность 1-Wire read и CRC.
+- [x] `GET_TEMP (0x9011)`: если запрошенный active/mapped канал дал валидную свежую температуру, Executor отправляет `ACK -> DATA(temp) -> DONE`; иначе `ACK -> NACK SENSOR_FAILURE`, без `DONE`.
+- [x] `GET_ALL_TEMPS (0x9010)`: если есть active/mapped каналы и хотя бы один active/mapped канал дал валидную температуру, Executor отправляет `ACK -> DATA(valid channels...) -> DONE`.
+- [x] `GET_ALL_TEMPS (0x9010)`: если active/mapped каналы есть, но ни один не дал валидной температуры, Executor отправляет `ACK -> NACK SENSOR_FAILURE`, без `DONE`.
+- [x] `GET_ALL_TEMPS (0x9010)`: если active/mapped каналов нет, Executor отправляет `ACK -> NACK SENSOR_FAILURE`, без `DONE`.
+- [x] После `DONE` по `GET_ALL_TEMPS` Дирижер считает отсутствующие active/mapped каналы ошибочными и формирует для них `TEMP_DATA.status = 3`.
+- [x] `CAN_ERR_INVALID_SENSOR_ID`, `CAN_ERR_UNKNOWN_CMD`, `CAN_ERR_BUSY`, service NACK и transport/protocol timeout не являются температурным `status=3`; это ошибки операции/маршрутизации/сервиса на уровне Дирижера.
+- [x] После `NACK` Executor никогда не отправляет `DONE`.
+
+Статус кодовой реализации 12.05.2026:
+
+- [x] В `App/src/tasks/task_temp_monitor.c` добавлена проверка active/mapped канала через валидный DS18B20 ROM из `AppConfig`.
+- [x] `GET_TEMP (0x9011)` больше не отдает старый temperature snapshot для непривязанного/невалидного канала; вместо этого отправляет `NACK SENSOR_FAILURE`, без `DONE`.
+- [x] `GET_ALL_TEMPS (0x9010)` отправляет `DATA` только по active/mapped каналам с валидным текущим значением.
+- [x] `GET_ALL_TEMPS (0x9010)` отправляет `DONE` только если есть хотя бы один active/mapped канал и хотя бы один валидный результат; иначе отправляет `NACK SENSOR_FAILURE`.
+- [x] Сборка после изменения подтверждена пользователем как чистая.
 
 Приемка:
 
 - [ ] Host получает однозначный status для normal/overheat/underheat/error или явную ошибку `0x80xx`.
-- [ ] Thermo executor не отправляет неутвержденные статусы.
+- [x] Thermo executor не отправляет неутвержденные статусы.
 
 ### Блок I: Safety / Watchdog / safe-state / fault path
 
-- [ ] Зафиксировать Thermo safety baseline:
-  - [ ] исполнитель не имеет силовых выходов, но обязан безопасно отпустить 1-Wire bus;
-  - [ ] fault/stale/missing sensor не должен трактоваться как нормальная температура;
-  - [ ] незавершенная команда после `ACK` не считается успешной без `DONE`;
-  - [ ] после watchdog/fault recovery Дирижер выполняет rediscovery перед продолжением сценария.
-- [ ] Определить Thermo safe-state hook:
-  - [ ] 1-Wire bus released to idle/high-Z open-drain state;
-  - [ ] активная DS18B20 транзакция считается прерванной;
-  - [ ] штатный `DONE` из fault/watchdog path не отправляется.
-- [ ] Вызывать Thermo safe-state hook при старте, `Error_Handler()` и fault handlers.
+- [x] Зафиксировать Thermo safety baseline:
+  - [x] исполнитель не имеет силовых выходов, но обязан безопасно отпустить 1-Wire bus;
+  - [x] fault/stale/missing sensor не должен трактоваться как нормальная температура;
+  - [x] незавершенная команда после `ACK` не считается успешной без `DONE`;
+  - [x] после watchdog/fault recovery Дирижер выполняет rediscovery перед продолжением сценария.
+- [x] Определить Thermo safe-state hook:
+  - [x] 1-Wire bus released to idle/high-Z open-drain state;
+  - [x] активная DS18B20 транзакция считается прерванной;
+  - [x] штатный `DONE` из fault/watchdog path не отправляется.
+- [x] Вызывать Thermo safe-state hook при старте, `Error_Handler()` и fault handlers.
 - [ ] Добавить RTOS resource checks для queues/tasks/mutex.
 - [ ] Добавить heartbeat API для критических задач: CAN transport, Dispatcher, Temp Monitor.
 - [ ] Добавить `task_watchdog` как единственного владельца `HAL_IWDG_Refresh()`.
@@ -182,9 +228,18 @@ PATH=/home/andrey/st/stm32cubeide_1.19.0/plugins/com.st.stm32cube.ide.mcu.extern
 - [ ] Если heartbeat критической задачи не продвинулся, supervisor вызывает safe-state hook и прекращает refresh IWDG.
 - [ ] Сборка проекта.
 
+Статус I.1 от 12.05.2026:
+
+- [x] Добавлен `AppSafety_EnterSafeState()` как доменный safe-state hook Thermo Executor.
+- [x] Добавлен `DS18B20_BusRelease()`: для open-drain PA0 запись HIGH отпускает 1-Wire bus в idle/high-Z состояние.
+- [x] Startup safe-state вызывается внутри `MX_GPIO_Init()` в `USER CODE BEGIN MX_GPIO_Init_2`, после настройки PA0 как open-drain.
+- [x] Safe-state вызывается из `Error_Handler()` до `__disable_irq()`.
+- [x] Safe-state вызывается из `HardFault_Handler()`, `MemManage_Handler()`, `BusFault_Handler()` и `UsageFault_Handler()`.
+- [x] Сборка после I.1 подтверждена пользователем как чистая.
+
 Приемка:
 
-- [ ] Safety baseline описан в отчете и не противоречит DDS-240 ecosystem standard.
+- [x] Safety baseline описан в отчете и не противоречит DDS-240 ecosystem standard.
 - [ ] Idle-тест без CAN-команд не вызывает ложный watchdog reset.
 - [ ] Fault-injection зависания критической задачи приводит к safe-state и аппаратному reset.
 - [ ] После reset Conductor выполняет rediscovery через `F001`.
@@ -212,4 +267,4 @@ PATH=/home/andrey/st/stm32cubeide_1.19.0/plugins/com.st.stm32cube.ide.mcu.extern
 
 ## 6. Следующий шаг
 
-Следующая сессия начинается с блока E: CAN hardware profile. Перед правкой нужно еще раз сверить эталонные параметры CAN в Motion/Fluidics и текущие настройки Cube для Thermo.
+Следующий архитектурный блок: I, Safety / Watchdog / safe-state / fault path. Начать нужно с фиксации Thermo safety baseline и safe-state hook без изменения общих правил экосистемы.

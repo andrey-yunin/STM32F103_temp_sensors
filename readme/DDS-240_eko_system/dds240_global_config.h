@@ -45,6 +45,12 @@
  * STM32 bxCAN executors must enable TransmitFifoPriority to preserve
  * ACK -> DATA... -> DONE ordering for multi-frame responses.
  */
+#define DDS240_BXCAN_MODE_NORMAL_REQUIRED           1U
+#define DDS240_BXCAN_TIME_TRIGGERED_MODE_ENABLE     0U
+#define DDS240_BXCAN_AUTO_BUS_OFF_ENABLE            0U
+#define DDS240_BXCAN_AUTO_WAKE_UP_ENABLE            0U
+#define DDS240_BXCAN_AUTO_RETRANSMISSION_ENABLE     0U
+#define DDS240_BXCAN_RECEIVE_FIFO_LOCKED_ENABLE     0U
 #define DDS240_BXCAN_TRANSMIT_FIFO_PRIORITY_ENABLE  1U
 
 #define DDS240_TX_MAILBOX_WAIT_TIMEOUT_MS           10U

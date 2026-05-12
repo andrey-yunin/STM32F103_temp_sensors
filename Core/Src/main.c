@@ -30,8 +30,7 @@
 #include "task_can_handler.h"
 #include "task_dispatcher.h"
 #include "task_temp_monitor.h"
-
-
+#include "app_safety.h"
 
 
 /* USER CODE END Includes */
@@ -134,24 +133,26 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+
   MX_CAN_Init();
+
   MX_TIM3_Init();
+
   /* USER CODE BEGIN 2 */
 
-AppConfig_Init(); // Загрузка маппинга и создание мьютекса
+  AppConfig_Init(); // Загрузка маппинга и создание мьютекса
 
   // Создание очередей FreeRTOS с использованием именованных констант
-can_rx_queueHandle = osMessageQueueNew(CAN_RX_QUEUE_LEN, sizeof(CanRxFrame_t), NULL); // CAN-фрейм: на прием
-can_tx_queueHandle = osMessageQueueNew(CAN_TX_QUEUE_LEN, sizeof(CanTxFrame_t), NULL); // CAN-фрейм на отправку
-parser_queueHandle = osMessageQueueNew(DISPATCHER_QUEUE_LEN, sizeof(ParsedCanCommand_t), NULL); // Структура команды
-thermo_queueHandle = osMessageQueueNew(THERMO_QUEUE_LEN, sizeof(ThermoCommand_t), NULL); // Прикладная команда Thermo
+  can_rx_queueHandle = osMessageQueueNew(CAN_RX_QUEUE_LEN, sizeof(CanRxFrame_t), NULL); // CAN-фрейм: на прием
+  can_tx_queueHandle = osMessageQueueNew(CAN_TX_QUEUE_LEN, sizeof(CanTxFrame_t), NULL); // CAN-фрейм на отправку
+  parser_queueHandle = osMessageQueueNew(DISPATCHER_QUEUE_LEN, sizeof(ParsedCanCommand_t), NULL); // Структура команды
+  thermo_queueHandle = osMessageQueueNew(THERMO_QUEUE_LEN, sizeof(ThermoCommand_t), NULL); // Прикладная команда Thermo
 
-// Проверка успешности создания очередей
-if (can_rx_queueHandle == NULL || parser_queueHandle == NULL ||
-	can_tx_queueHandle == NULL || thermo_queueHandle == NULL) {
-	Error_Handler();
-    }
-
+  // Проверка успешности создания очередей
+  if (can_rx_queueHandle == NULL || parser_queueHandle == NULL ||
+		  can_tx_queueHandle == NULL || thermo_queueHandle == NULL) {
+	  Error_Handler();
+	  }
 
   /* USER CODE END 2 */
 
@@ -262,17 +263,17 @@ static void MX_CAN_Init(void)
 
   /* USER CODE END CAN_Init 1 */
   hcan.Instance = CAN1;
-  hcan.Init.Prescaler = 16;
+  hcan.Init.Prescaler = 2;
   hcan.Init.Mode = CAN_MODE_NORMAL;
   hcan.Init.SyncJumpWidth = CAN_SJW_1TQ;
-  hcan.Init.TimeSeg1 = CAN_BS1_1TQ;
-  hcan.Init.TimeSeg2 = CAN_BS2_1TQ;
+  hcan.Init.TimeSeg1 = CAN_BS1_11TQ;
+  hcan.Init.TimeSeg2 = CAN_BS2_4TQ;
   hcan.Init.TimeTriggeredMode = DISABLE;
   hcan.Init.AutoBusOff = DISABLE;
   hcan.Init.AutoWakeUp = DISABLE;
   hcan.Init.AutoRetransmission = DISABLE;
   hcan.Init.ReceiveFifoLocked = DISABLE;
-  hcan.Init.TransmitFifoPriority = DISABLE;
+  hcan.Init.TransmitFifoPriority = ENABLE;
   if (HAL_CAN_Init(&hcan) != HAL_OK)
   {
     Error_Handler();
@@ -292,6 +293,7 @@ static void MX_TIM3_Init(void)
 {
 
   /* USER CODE BEGIN TIM3_Init 0 */
+
 
   /* USER CODE END TIM3_Init 0 */
 
@@ -323,6 +325,18 @@ static void MX_TIM3_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN TIM3_Init 2 */
+
+  /*
+   * TIM3 используется драйвером DS18B20 как свободно бегущий
+   * микросекундный таймер для delay_us().
+   *
+   * Без запуска базового таймера счетчик TIM3 не растет, и delay_us()
+   * может зависнуть в цикле ожидания первого 1-Wire тайминга.
+   */
+  if (HAL_TIM_Base_Start(&htim3) != HAL_OK)
+	  {
+	  Error_Handler();
+	  }
 
   /* USER CODE END TIM3_Init 2 */
 
@@ -365,6 +379,12 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(ONE_WIRE_BUS_GPIO_Port, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
+
+  /*
+   * CubeMX перед настройкой open-drain pin выставляет output latch.
+   * После GPIO init явно отпускаем 1-Wire bus в безопасное idle HIGH.
+   */
+  AppSafety_EnterSafeState();
 
   /* USER CODE END MX_GPIO_Init_2 */
 }
@@ -461,6 +481,13 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
+
+	/*
+	 * Любая критическая ошибка переводит Thermo в safe-state.
+	 * DONE/NACK из этого path не отправляем: Дирижер увидит fault по timeout.
+	 */
+	 AppSafety_EnterSafeState();
+
   __disable_irq();
   while (1)
   {

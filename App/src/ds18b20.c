@@ -37,6 +37,20 @@ static uint8_t LastDeviceFlag;
 #define ONE_WIRE_HIGH()     (ONE_WIRE_BUS_GPIO_Port->BSRR = ONE_WIRE_BUS_Pin)
 #define ONE_WIRE_READ()     ((ONE_WIRE_BUS_GPIO_Port->IDR & ONE_WIRE_BUS_Pin) != 0)
 
+void DS18B20_BusRelease(void)
+{
+	/*
+  	 * В open-drain режиме запись HIGH не тянет линию вверх активно,
+  	 * а отпускает ее. Подтяжка 1-Wire возвращает bus в idle HIGH.
+  	 *
+  	 * Функция не использует RTOS, CAN, heap и не отправляет DONE/NACK.
+  	 */
+  	ONE_WIRE_HIGH();
+}
+
+
+
+
 // Микросекундная задержка (TIM3 настроен на 1 МГц)
 void delay_us(uint32_t us) {
 	__HAL_TIM_SET_COUNTER(&htim3, 0);
