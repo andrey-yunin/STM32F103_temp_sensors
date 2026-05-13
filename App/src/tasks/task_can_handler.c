@@ -18,6 +18,7 @@
 #include "app_config.h"     // Для CanRxFrame_t, CanTxFrame_t, CAN_DATA_MAX_LEN
 #include "can_protocol.h"
 #include "app_flash.h"
+#include "task_watchdog.h"
 #include <string.h>
 
 // --- Внешние хэндлы HAL ---
@@ -33,11 +34,11 @@ void CAN_Diagnostics_GetSnapshot(CanDiagnostics_t *out)
 		}
 
 	// Снимок нужен для F007 GET_STATUS.
-  	// Копируем атомарно, потому что часть счетчиков позже будет обновляться
-  	// из CAN callback/ISR path.
-  	__disable_irq();
-  	memcpy(out, (const void *)&g_can_diag, sizeof(CanDiagnostics_t));
-  	__enable_irq();
+	// Копируем атомарно, потому что часть счетчиков позже будет обновляться
+	// из CAN callback/ISR path.
+	__disable_irq();
+	memcpy(out, (const void *)&g_can_diag, sizeof(CanDiagnostics_t));
+	__enable_irq();
 }
 
 void CAN_Diagnostics_RecordRxQueueOverflow(void)
@@ -57,19 +58,19 @@ void CAN_Diagnostics_RecordCanError(uint32_t hal_error, uint32_t esr)
     g_can_diag.last_esr = esr;
 
     if ((esr & CAN_ESR_EWGF) != 0U)
-    	{
-    	g_can_diag.error_warning_count++;
-    	}
+	{
+	g_can_diag.error_warning_count++;
+	}
 
     if ((esr & CAN_ESR_EPVF) != 0U)
-    	{
-    	g_can_diag.error_passive_count++;
-    	}
+	{
+	g_can_diag.error_passive_count++;
+	}
 
     if ((esr & CAN_ESR_BOFF) != 0U)
-    	{
-    	g_can_diag.bus_off_count++;
-    	}
+	{
+	g_can_diag.bus_off_count++;
+	}
 }
 
 
@@ -151,7 +152,7 @@ void CAN_SendData(uint16_t cmd_code, uint8_t *data, uint8_t len) {
     for(uint8_t i = 0; i < 6; i++) {
         if (i < len) tx.data[2 + i] = data[i];
         else         tx.data[2 + i] = 0x00;
-    	}
+	}
 
     CAN_QueueTxFrame(&tx);
 
@@ -189,7 +190,7 @@ void app_start_task_can_handler(void *argument) {
     if (HAL_CAN_ConfigFilter(&hcan, &sFilterConfig) != HAL_OK) Error_Handler();
     if (HAL_CAN_Start(&hcan) != HAL_OK) Error_Handler();
     if (HAL_CAN_ActivateNotification(&hcan,
-    		CAN_IT_RX_FIFO0_MSG_PENDING |
+		CAN_IT_RX_FIFO0_MSG_PENDING |
 			CAN_IT_RX_FIFO0_FULL |
 			CAN_IT_RX_FIFO0_OVERRUN |
 			CAN_IT_ERROR_WARNING |
@@ -198,109 +199,124 @@ void app_start_task_can_handler(void *argument) {
 			CAN_IT_LAST_ERROR_CODE |
 			CAN_IT_ERROR) != HAL_OK) Error_Handler();
 
-    for (;;) {
-    	// Ожидаем прерывание (RX) или запрос на отправку (TX)
-        uint32_t flags = osThreadFlagsWait(FLAG_CAN_RX | FLAG_CAN_TX, osFlagsWaitAny, osWaitForever);
+    for (;;)
+    {
+	 /*
+	  * CAN task дошла до штатной точки ожидания RX/TX событий.
+	  * Это общий pattern Motion/Fluidics.
+	  */
 
-        if ((flags & osFlagsError) != 0U) {
-        	continue;
-        }
+	 AppWatchdog_Heartbeat(APP_WDG_CLIENT_CAN);
 
-        // --- Обработка приема (RX) ---
-        if (flags & FLAG_CAN_RX) {
-        	while (osMessageQueueGet(can_rx_queueHandle, &rx_frame, NULL, 0) == osOK) {
-        		// Транспорт принимает только 29-bit Extended ID.
-        		// Некорректный транспортный формат не получает NACK.
-        		if (rx_frame.header.IDE != CAN_ID_EXT)
-        		{
-        			g_can_diag.dropped_not_ext++;
-        			continue;
-        		}
+	// Ожидаем прерывание (RX) или запрос на отправку (TX)
+        uint32_t flags = osThreadFlagsWait(FLAG_CAN_RX | FLAG_CAN_TX, osFlagsWaitAny,
+		                           APP_WATCHDOG_TASK_IDLE_TIMEOUT_MS);
 
-        		uint32_t can_id = rx_frame.header.ExtId;
-        		uint8_t dst_addr = CAN_GET_DST_ADDR(can_id);
-        		uint8_t my_id = (uint8_t)AppConfig_GetPerformerID();
+        /*
+         * Задача проснулась по событию или timeout.
+         * Даже если команд нет, watchdog видит, что CAN task не зависла.
+         */
+         AppWatchdog_Heartbeat(APP_WDG_CLIENT_CAN);
 
-                // Программная фильтрация: наш NodeID или Broadcast (0x00).
-                if (dst_addr != my_id && dst_addr != CAN_ADDR_BROADCAST)
-                {
-                	g_can_diag.dropped_wrong_dst++;
-                	continue;
-                }
+         if ((flags & osFlagsError) != 0U) {
+	 continue;
+	 }
 
-                if (CAN_GET_MSG_TYPE(can_id) != CAN_MSG_TYPE_COMMAND)
-                {
-                	g_can_diag.dropped_wrong_type++;
-                	continue;
-                }
-                
-                // Directive 2.0: Conductor <-> Executor использует строгий DLC=8.
-                if (rx_frame.header.DLC != 8U) {
-                    g_can_diag.dropped_wrong_dlc++;
-                    continue;
-                }
+         // --- Обработка приема (RX) ---
+         if (flags & FLAG_CAN_RX) {
+	 while (osMessageQueueGet(can_rx_queueHandle, &rx_frame, NULL, 0) == osOK) {
+		 // Транспорт принимает только 29-bit Extended ID.
+		 // Некорректный транспортный формат не получает NACK.
 
-                ParsedCanCommand_t parsed;
-                memset(&parsed, 0, sizeof(parsed));
+		 if (rx_frame.header.IDE != CAN_ID_EXT)
+			 {
+			 g_can_diag.dropped_not_ext++;
+			 continue;
+			 }
 
-                parsed.cmd_code = (uint16_t)rx_frame.data[0] |
-                                    ((uint16_t)rx_frame.data[1] << 8);
-                parsed.sensor_id = rx_frame.data[2];
-                parsed.data_len = 5U;
+		 uint32_t can_id = rx_frame.header.ExtId;
+		 uint8_t dst_addr = CAN_GET_DST_ADDR(can_id);
+		 uint8_t my_id = (uint8_t)AppConfig_GetPerformerID();
 
-                for (uint8_t i = 0U; i < parsed.data_len; i++)
-                	{
-                	parsed.data[i] = rx_frame.data[3U + i];
-                	}
+		 // Программная фильтрация: наш NodeID или Broadcast (0x00).
+		 if (dst_addr != my_id && dst_addr != CAN_ADDR_BROADCAST)
+			 {
+			 g_can_diag.dropped_wrong_dst++;
+			 continue;
+			 }
 
-                if (osMessageQueuePut(parser_queueHandle, &parsed, 0, 0) == osOK)
-                	{
-                	g_can_diag.rx_total++;
-                	}
-                else
-                	{
-                	g_can_diag.dispatcher_queue_overflow++;
-                	}
-        	}
-        }
+		 if (CAN_GET_MSG_TYPE(can_id) != CAN_MSG_TYPE_COMMAND)
+			 {
+			 g_can_diag.dropped_wrong_type++;
+			 continue;
+			 }
 
+		 // Directive 2.0: Conductor <-> Executor использует строгий DLC=8.
+		 if (rx_frame.header.DLC != 8U) {
+			 g_can_diag.dropped_wrong_dlc++;
+			 continue;
+			 }
 
-        // --- Обработка передачи (TX) ---
-        if (flags & FLAG_CAN_TX)
-        	{
-        	while (osMessageQueueGet(can_tx_queueHandle, &tx_frame, NULL, 0) == osOK)
-        	{
-        	uint32_t tick_start = HAL_GetTick();
+		 ParsedCanCommand_t parsed;
+		 memset(&parsed, 0, sizeof(parsed));
 
-        	while ((HAL_CAN_GetTxMailboxesFreeLevel(&hcan) == 0U) &&
-        			((HAL_GetTick() - tick_start) < 10U))
-        		{
-        		osDelay(1);
-        		}
+		 parsed.cmd_code = (uint16_t)rx_frame.data[0] |
+				 ((uint16_t)rx_frame.data[1] << 8);
 
-        	if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan) > 0U)
-        		{
-        		if (HAL_CAN_AddTxMessage(&hcan,
-        				&tx_frame.header,
-						tx_frame.data,
-						&txMailbox) == HAL_OK)
-        			{
-        			g_can_diag.tx_total++;
-        			}
-        		else
-        			{
-        			g_can_diag.tx_hal_error++;
-        	        g_can_diag.last_hal_error = HAL_CAN_GetError(&hcan);
-        	        g_can_diag.last_esr = hcan.Instance->ESR;
-        	        }
-        		}
-        	else
-        	{
-        		g_can_diag.tx_mailbox_timeout++;
-        		}
-        	}
-        	}
-    }
+		 parsed.sensor_id = rx_frame.data[2];
+		 parsed.data_len = 5U;
+
+		 for (uint8_t i = 0U; i < parsed.data_len; i++)
+			 {
+			 parsed.data[i] = rx_frame.data[3U + i];
+			 }
+
+		 if (osMessageQueuePut(parser_queueHandle, &parsed, 0, 0) == osOK)
+			 {
+			 g_can_diag.rx_total++;
+			 }
+		 else
+			 {
+			 g_can_diag.dispatcher_queue_overflow++;
+			 }
+		 }
+	 }
+
+         // --- Обработка передачи (TX) ---
+         if (flags & FLAG_CAN_TX)
+	 {
+	 while (osMessageQueueGet(can_tx_queueHandle, &tx_frame, NULL, 0) == osOK)
+		 {
+		 uint32_t tick_start = HAL_GetTick();
+		 while ((HAL_CAN_GetTxMailboxesFreeLevel(&hcan) == 0U) &&
+				 ((HAL_GetTick() - tick_start) < 10U))
+			 {
+			 osDelay(1);
+			 }
+
+		 if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan) > 0U)
+			 {
+			 if (HAL_CAN_AddTxMessage(&hcan,
+					 &tx_frame.header,
+							 tx_frame.data,
+							 &txMailbox) == HAL_OK)
+				 {
+				 g_can_diag.tx_total++;
+				 }
+			 else
+				 {
+				 g_can_diag.tx_hal_error++;
+				 g_can_diag.last_hal_error = HAL_CAN_GetError(&hcan);
+				 g_can_diag.last_esr = hcan.Instance->ESR;
+				 }
+			 }
+		 else
+			 {
+			 g_can_diag.tx_mailbox_timeout++;
+			 }
+		 }
+	 }
+         }
 }
 
 

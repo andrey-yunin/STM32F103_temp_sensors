@@ -31,6 +31,7 @@
 #include "task_dispatcher.h"
 #include "task_temp_monitor.h"
 #include "app_safety.h"
+#include "task_watchdog.h"
 
 
 /* USER CODE END Includes */
@@ -53,13 +54,15 @@
 /* Private variables ---------------------------------------------------------*/
 CAN_HandleTypeDef hcan;
 
+IWDG_HandleTypeDef hiwdg;
+
 TIM_HandleTypeDef htim3;
 
 /* Definitions for task_can_handle */
 osThreadId_t task_can_handleHandle;
 const osThreadAttr_t task_can_handle_attributes = {
   .name = "task_can_handle",
-  .stack_size = 128 * 4,
+  .stack_size = 256 * 4,
   .priority = (osPriority_t) osPriorityHigh,
 };
 /* Definitions for task_dispatcher */
@@ -74,7 +77,14 @@ osThreadId_t task_temp_monitHandle;
 const osThreadAttr_t task_temp_monit_attributes = {
   .name = "task_temp_monit",
   .stack_size = 256 * 4,
-  .priority = (osPriority_t) osPriorityLow,
+  .priority = (osPriority_t) osPriorityBelowNormal,
+};
+/* Definitions for task_watchdog */
+osThreadId_t task_watchdogHandle;
+const osThreadAttr_t task_watchdog_attributes = {
+  .name = "task_watchdog",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityAboveNormal,
 };
 /* USER CODE BEGIN PV */
 
@@ -91,9 +101,11 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_CAN_Init(void);
 static void MX_TIM3_Init(void);
+static void MX_IWDG_Init(void);
 void start_task_can_handler(void *argument);
 void start_task_dispatcher(void *argument);
 void start_task_temp_monitor(void *argument);
+void start_task_watchdog(void *argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -133,11 +145,9 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-
   MX_CAN_Init();
-
   MX_TIM3_Init();
-
+  MX_IWDG_Init();
   /* USER CODE BEGIN 2 */
 
   AppConfig_Init(); // Загрузка маппинга и создание мьютекса
@@ -149,8 +159,11 @@ int main(void)
   thermo_queueHandle = osMessageQueueNew(THERMO_QUEUE_LEN, sizeof(ThermoCommand_t), NULL); // Прикладная команда Thermo
 
   // Проверка успешности создания очередей
-  if (can_rx_queueHandle == NULL || parser_queueHandle == NULL ||
-		  can_tx_queueHandle == NULL || thermo_queueHandle == NULL) {
+  if (can_rx_queueHandle == NULL ||
+		  parser_queueHandle == NULL ||
+		  can_tx_queueHandle == NULL ||
+		  thermo_queueHandle == NULL)
+  {
 	  Error_Handler();
 	  }
 
@@ -185,8 +198,26 @@ int main(void)
   /* creation of task_temp_monit */
   task_temp_monitHandle = osThreadNew(start_task_temp_monitor, NULL, &task_temp_monit_attributes);
 
+  /* creation of task_watchdog */
+  task_watchdogHandle = osThreadNew(start_task_watchdog, NULL, &task_watchdog_attributes);
+
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
+  /*
+   *
+   * CAN, Dispatcher, Temp Monitor и Watchdog - критические задачи.
+   * Если хотя бы одна не создана, Executor не должен стартовать
+   * в частично рабочем состоянии.
+   *
+   */
+   if (task_can_handleHandle == NULL ||
+	   task_dispatcherHandle == NULL ||
+	   task_temp_monitHandle == NULL ||
+	   task_watchdogHandle   == NULL)
+	   {
+	   Error_Handler();
+	   }
+
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -221,9 +252,10 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI_DIV2;
   RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL16;
@@ -281,6 +313,34 @@ static void MX_CAN_Init(void)
   /* USER CODE BEGIN CAN_Init 2 */
 
   /* USER CODE END CAN_Init 2 */
+
+}
+
+/**
+  * @brief IWDG Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_IWDG_Init(void)
+{
+
+  /* USER CODE BEGIN IWDG_Init 0 */
+
+  /* USER CODE END IWDG_Init 0 */
+
+  /* USER CODE BEGIN IWDG_Init 1 */
+
+  /* USER CODE END IWDG_Init 1 */
+  hiwdg.Instance = IWDG;
+  hiwdg.Init.Prescaler = IWDG_PRESCALER_256;
+  hiwdg.Init.Reload = 624;
+  if (HAL_IWDG_Init(&hiwdg) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN IWDG_Init 2 */
+
+  /* USER CODE END IWDG_Init 2 */
 
 }
 
@@ -449,6 +509,26 @@ void start_task_temp_monitor(void *argument)
     osDelay(1);
   }
   /* USER CODE END start_task_temp_monitor */
+}
+
+/* USER CODE BEGIN Header_start_task_watchdog */
+/**
+* @brief Function implementing the task_watchdog thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_start_task_watchdog */
+void start_task_watchdog(void *argument)
+{
+  /* USER CODE BEGIN start_task_watchdog */
+	app_start_task_watchdog(argument);
+
+	/* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END start_task_watchdog */
 }
 
 /**

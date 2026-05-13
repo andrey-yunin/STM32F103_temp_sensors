@@ -21,6 +21,7 @@
 #include "can_protocol.h"
 #include "task_dispatcher.h"
 #include "task_can_handler.h"
+#include "task_watchdog.h"
 #include <string.h>
 
 static void SendStatusMetric(uint16_t cmd_code, uint16_t metric_id, uint32_t value)
@@ -66,9 +67,21 @@ void app_start_task_dispatcher(void *argument)
 
 	for (;;) {
 		// Ожидаем команду из очереди (parser_queue), наполняемой в task_can_handler
-	    if (osMessageQueueGet(parser_queueHandle, &parsed, NULL, osWaitForever) != osOK) {
+	    /*
+	     * Dispatcher жив и готов принимать валидные команды от CAN task.
+	     */
+		 AppWatchdog_Heartbeat(APP_WDG_CLIENT_DISPATCHER);
+
+	    if (osMessageQueueGet(parser_queueHandle, &parsed, NULL,
+			              APP_WATCHDOG_TASK_IDLE_TIMEOUT_MS) != osOK) {
 		continue;
 		}
+
+	    /*
+	     * Команда получена, Dispatcher реально продвинулся к прикладной обработке.
+	     */
+	    AppWatchdog_Heartbeat(APP_WDG_CLIENT_DISPATCHER);
+
 
 	    // --- 1. Немедленное подтверждение получения команды (ACK) ---
 	    CAN_SendAck(parsed.cmd_code);
