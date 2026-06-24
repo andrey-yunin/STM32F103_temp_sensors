@@ -13,7 +13,8 @@ Industrial-grade execution module for high-precision temperature monitoring in b
 - **Auto-Discovery**: Full implementation of the Maxim Integrated Search ROM algorithm for automatic detection of all sensors on the bus.
 - **DDS-240 CAN Protocol**: 29-bit Extended ID communication with full transaction lifecycle management (COMMAND -> ACK -> DATA -> DONE).
 - **Advanced Service Layer (0xFxxx)**: Remote management capabilities, including "Warm Finger" sensor mapping and identification without reflashing.
-- **Identity Management**: Unique identification using 96-bit factory-programmed MCU UID and 8-bit Device Type (0x40).
+- **Identity Management**: Unique identification using 96-bit factory-programmed MCU UID, default NodeID `0x40`, and Thermo DeviceType `0x02`.
+- **NACK Namespace**: Common executor codes are shared across boards; Thermo `SENSOR_FAILURE` is the domain code `0xE400`.
 - **Fail-Safe Storage**: Internal Flash-based persistent storage for sensor mapping with CRC16 and MagicKey validation.
 - **Thread-Safe Architecture**: Fully asynchronous task-based design using FreeRTOS Mutexes, Semaphores, and Message Queues.
 
@@ -28,7 +29,8 @@ The firmware is structured into three specialized RTOS tasks to ensure high avai
 ## 📡 Service & Identity
 
 Each board is uniquely identified and managed within the analyzer ecosystem:
-- **Device Type**: `0x40` (Thermo Board).
+- **NodeID**: `0x40` (Thermo Board).
+- **Device Type**: `0x02`.
 - **Unique ID**: 96-bit MCU UID used for physical instance identification.
 - **Service API**:
     - `0xF001`: Request Device Info (Type, FW Version, 96-bit UID).
@@ -52,10 +54,13 @@ Each board is uniquely identified and managed within the analyzer ecosystem:
 
 ## 📖 Documentation
 
-Detailed documentation is available in the `readme/` directory:
-- [Service Infrastructure Concept](readme/SERVICE_INFRASTRUCTURE_CONCEPT.md)
-- [CAN Protocol: Application Layer](readme/Commands_API/CAN_Protocol/3_Application_Layer.md)
-- [Low-Level Command Set](readme/Commands_API/CAN_Protocol/5_Low_Level_Commands.md)
+The project keeps only a local pointer in `readme/README.md`; the authoritative
+documents live in the shared workspace documentation tree:
+
+- [Local documentation pointer](readme/README.md)
+- [Thermo executor report](../DDS-240_readme/DDS-240_eko_system/Thermo/TEMP_SENSORS_EXECUTOR_REPORT.md)
+- [Ecosystem standard](../DDS-240_readme/DDS-240_eko_system/DDS-240_ECOSYSTEM_STANDARD.md)
+- [Low-level command set](../DDS-240_readme/DDS-240_eko_system/CAN_Protocol/5_Low_Level_Commands.md)
 
 ---
 *Developed as part of the SmartHeater & Analyzer ecosystem. Advanced Level Engineering.*

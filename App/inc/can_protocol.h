@@ -73,14 +73,22 @@
 // ============================================================
 // Коды ошибок для NACK-ответов (DDS-240 Standard)
 // ============================================================
-#define CAN_ERR_NONE                0x0000
-#define CAN_ERR_UNKNOWN_CMD         0x0001
-#define CAN_ERR_INVALID_SENSOR_ID   0x0002
-#define CAN_ERR_SENSOR_FAILURE      0x0003
-#define CAN_ERR_INVALID_KEY         0x0004 // Ошибка защитного ключа (Magic Key)
-#define CAN_ERR_FLASH_WRITE         0x0005 // Ошибка записи во внутреннюю память
-#define CAN_ERR_INVALID_PARAM       0x0006 // Некорректный параметр команды
-#define CAN_ERR_BUSY                0x0007 // Устройство занято выполнением другой задачи
+// Common executor NACK namespace: одинаковые значения для всех плат.
+#define CAN_ERR_NONE                    0x0000
+#define CAN_ERR_UNKNOWN_CMD             0x0001
+#define CAN_ERR_INVALID_DEVICE_ID       0x0002
+#define CAN_ERR_DEVICE_BUSY             0x0003
+#define CAN_ERR_INVALID_KEY             0x0004 // Ошибка защитного ключа (Magic Key)
+#define CAN_ERR_FLASH_WRITE             0x0005 // Ошибка записи во внутреннюю память
+#define CAN_ERR_INVALID_PARAM           0x0006 // Некорректный параметр команды
+
+// Thermo aliases: sensor_id является low-level channel/resource id.
+#define CAN_ERR_INVALID_SENSOR_ID       CAN_ERR_INVALID_DEVICE_ID
+#define CAN_ERR_BUSY                    CAN_ERR_DEVICE_BUSY
+
+// Thermo domain NACK namespace: 0xE400..0xE4FF.
+#define CAN_ERR_THERMO_SENSOR_FAILURE   0xE400
+#define CAN_ERR_SENSOR_FAILURE          CAN_ERR_THERMO_SENSOR_FAILURE
 
 
 // ============================================================
