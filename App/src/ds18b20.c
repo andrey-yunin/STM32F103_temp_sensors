@@ -40,15 +40,13 @@ static uint8_t LastDeviceFlag;
 void DS18B20_BusRelease(void)
 {
 	/*
-  	 * В open-drain режиме запись HIGH не тянет линию вверх активно,
-  	 * а отпускает ее. Подтяжка 1-Wire возвращает bus в idle HIGH.
-  	 *
-  	 * Функция не использует RTOS, CAN, heap и не отправляет DONE/NACK.
-  	 */
-  	ONE_WIRE_HIGH();
+	 * В open-drain режиме запись HIGH не тянет линию вверх активно,
+	 * а отпускает ее. Подтяжка 1-Wire возвращает bus в idle HIGH.
+	 *
+	 * Функция не использует RTOS, CAN, heap и не отправляет DONE/NACK.
+	 */
+	ONE_WIRE_HIGH();
 }
-
-
 
 
 // Микросекундная задержка (TIM3 настроен на 1 МГц)
@@ -122,8 +120,8 @@ static uint8_t OneWire_CRC8(const uint8_t* data, uint8_t len) {
 bool DS18B20_IsValidROM(const DS18B20_ROM_t* rom)
 {
 	if (rom == NULL) {
-  	return false;
-  	}
+		return false;
+	}
 
 	if (rom->rom_code[0] != DS18B20_FAMILY_CODE) {
 		return false;
@@ -194,32 +192,70 @@ uint8_t DS18B20_Init() {
 	return ds18b20_sensor_count;
 	}
 
-void DS18B20_StartAll() {
-	if (OneWire_Reset()) {
-		OneWire_WriteByte(DS18B20_CMD_SKIPROM);
-		OneWire_WriteByte(DS18B20_CMD_CONVERTTEMP);
-		}
+bool DS18B20_StartAll(void)
+{
+	if (!OneWire_Reset()) {
+		return false;
 	}
 
-bool DS18B20_ReadTemperature(DS18B20_ROM_t* rom, float* out_temp) {
-	uint8_t scratchpad[9];
-	if (!OneWire_Reset()) return false;
-	OneWire_WriteByte(DS18B20_CMD_MATCHROM);
-	for (uint8_t i = 0; i < 8; i++) OneWire_WriteByte(rom->rom_code[i]);
-	OneWire_WriteByte(DS18B20_CMD_READSCRATCH);
-	for (uint8_t i = 0; i < 9; i++) scratchpad[i] = OneWire_ReadByte();
-	if (OneWire_CRC8(scratchpad, 8) != scratchpad[8]) return false;
-	int16_t raw_temp = (int16_t)(scratchpad[1] << 8) | scratchpad[0];
-	*out_temp = (float)raw_temp * 0.0625f; // Разрешение 12 бит (1/16)
+	OneWire_WriteByte(DS18B20_CMD_SKIPROM);
+	OneWire_WriteByte(DS18B20_CMD_CONVERTTEMP);
 	return true;
+}
+
+
+bool DS18B20_IsConversionComplete(void)
+{
+	/*
+	 * После CONVERT T DS18B20 отдает 0, пока измерение выполняется,
+	 * и 1, когда результат готов. На общей шине 0 от любого датчика
+	 * удержит линию в 0, поэтому true означает "готовы все".
+	 */
+	return OneWire_ReadBit();
+}
+
+
+DS18B20_ReadResult_t DS18B20_ReadTemperature(const DS18B20_ROM_t* rom,
+                                             float* out_temp)
+{
+	uint8_t scratchpad[9];
+
+	if (rom == NULL || out_temp == NULL) {
+		return DS18B20_READ_COMM_ERROR;
 	}
+
+	if (!OneWire_Reset()) {
+		return DS18B20_READ_COMM_ERROR;
+	}
+
+	OneWire_WriteByte(DS18B20_CMD_MATCHROM);
+	for (uint8_t i = 0; i < 8; i++) {
+		OneWire_WriteByte(rom->rom_code[i]);
+	}
+
+	OneWire_WriteByte(DS18B20_CMD_READSCRATCH);
+	for (uint8_t i = 0; i < 9; i++) {
+		scratchpad[i] = OneWire_ReadByte();
+	}
+
+	/*
+	 * CRC mismatch is a real read integrity failure on the 1-Wire path.
+	 * It must be reported as COMM, not as a generic missing sample.
+	 */
+	if (OneWire_CRC8(scratchpad, 8) != scratchpad[8]) {
+		return DS18B20_READ_COMM_ERROR;
+	}
+
+	int16_t raw_temp = (int16_t)(scratchpad[1] << 8) | scratchpad[0];
+	*out_temp = (float)raw_temp * 0.0625f;
+
+	return DS18B20_READ_OK;
+}
+
 
 DS18B20_ROM_t* DS18B20_GetROM(uint8_t sensor_index) {
 	if (sensor_index < ds18b20_sensor_count) return &ds18b20_rom_codes[sensor_index];
 	return NULL;
-	}
-
-
-
+}
 
 
