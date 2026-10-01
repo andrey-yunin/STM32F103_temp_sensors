@@ -17,7 +17,6 @@
 #define APP_CONFIG_FLASH_ADDR    0x0800FC00
 #define APP_CONFIG_MAGIC         0x55AAEEFF // Ключ валидности данных
 
-
 /**
  * @brief Структура конфигурации устройства, хранимая во Flash.
  *
@@ -33,19 +32,17 @@
 
 typedef struct {
 	uint32_t magic;                             // Метка инициализации памяти
-    DS18B20_ROM_t sensors[DS18B20_MAX_SENSORS]; // Таблица маппинга (8 x 8 байт)
-    uint8_t performer_id;                      // Настраиваемый CAN ID платы
-    uint8_t  reserved_bytes[5];                  // 5 байт: явное выравнивание до checksum
-    uint16_t checksum;                          // Контрольная сумма структуры
+	DS18B20_ROM_t sensors[DS18B20_MAX_SENSORS]; // Таблица маппинга (8 x 8 байт)
+	uint8_t performer_id;                      // Настраиваемый CAN ID платы
+	uint8_t reserved_bytes[5];         // 5 байт: явное выравнивание до checksum
+	uint16_t checksum;                          // Контрольная сумма структуры
 } AppConfig_t;
-
 
 /**
  * @brief Чтение 96-битного уникального идентификатора чипа (MCU UID).
  * @param out_uid Указатель на массив размером 12 байт.
  */
-void AppConfig_GetMCU_UID(uint8_t* out_uid);
-
+void AppConfig_GetMCU_UID(uint8_t *out_uid);
 
 /**
  * @brief Инициализирует конфигурацию и создает Mutex.
@@ -62,7 +59,6 @@ void AppConfig_GetSensorROM(uint8_t index, DS18B20_ROM_t *out_rom);
  */
 void AppConfig_SetSensorROM(uint8_t index, DS18B20_ROM_t *in_rom);
 
-
 /**
  * @brief Безопасная запись CAN ID платы (в RAM).
  */
@@ -73,15 +69,19 @@ void AppConfig_SetPerformerID(uint32_t id);
  */
 uint32_t AppConfig_GetPerformerID(void);
 
-/**
- * @brief Сохранение всех изменений во Flash.
+// --- Сохранение конфигурации ---
+
+/*
+ * Сохраняет текущую RAM-конфигурацию во Flash.
+ * Возвращает результат операции для ответа на F003.
  */
 bool AppConfig_Commit(void);
 
-
-/**
- * @brief Сброс конфигурации к заводским настройкам (стирание Flash).
+/*
+ * Стирает страницу конфигурации под защитой configMutex.
+ * Возвращает true только при успешных Unlock, Erase и Lock.
+ * RAM-конфигурацию не меняет; defaults загружаются после перезапуска.
  */
-void AppConfig_FactoryReset(void);
+bool AppConfig_FactoryReset(void);
 
 #endif /* APP_FLASH_H_ */

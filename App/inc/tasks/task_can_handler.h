@@ -37,6 +37,10 @@ void CAN_Diagnostics_RecordRxQueueOverflow(void);
 void CAN_Diagnostics_RecordAppQueueOverflow(void);
 void CAN_Diagnostics_RecordCanError(uint32_t hal_error, uint32_t esr);
 
+// --- Обновление адресного фильтра ---
+/* F005 вызывает после смены NodeID в RAM, до постановки DONE в TX-очередь. */
+void CAN_UpdateDirectFilter(uint8_t destination);
+
 void app_start_task_can_handler(void *argument);
 
 #endif /* TASK_CAN_HANDLER_H_ */

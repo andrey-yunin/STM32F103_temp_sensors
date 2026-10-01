@@ -18,6 +18,18 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+// --- Формат CAN DATA ---
+
+/*
+ * Общие константы DDS-240, как в HC.
+ * Два байта кадра заняты subtype и sequence_info;
+ * остальные шесть содержат данные конкретной команды.
+ */
+#define CAN_FRAME_DLC             8U
+#define CAN_DATA_PAYLOAD_MAX      6U
+#define CAN_DATA_SEQ_EOT_MASK     0x80U
+#define CAN_DATA_SEQ_INDEX_MASK   0x7FU
+
 // ============================================================
 // Приоритеты (биты 28-26 CAN ID)
 // ============================================================
@@ -46,6 +58,15 @@
 #define CAN_ADDR_HOST           0x01
 #define CAN_ADDR_CONDUCTOR      0x10
 #define CAN_ADDR_THERMO_BOARD   0x40  // Наш адрес (Плата термодатчиков)
+
+// --- Допустимые адреса семейства Thermo ---
+
+/*
+ * Диапазон из dds240_global_config.h.
+ * Это адреса плат на CAN; номера каналов датчиков задаются отдельно.
+ */
+#define CAN_ADDR_THERMO_BOARD_BASE   0x40U
+#define CAN_ADDR_THERMO_BOARD_LAST   0x4FU
 
 // ============================================================
 // Коды команд сенсоров (байты 0-1 payload, Little-Endian)
@@ -138,7 +159,13 @@ typedef struct {
 void CAN_SendAck(uint16_t cmd_code);
 void CAN_SendNack(uint16_t cmd_code, uint16_t error_code);
 void CAN_SendDone(uint16_t cmd_code, uint8_t sensor_id);
-void CAN_SendData(uint16_t cmd_code, uint8_t *data, uint8_t len);
+
+/*
+ * Вызывающий обработчик задаёт sequence_info по контракту команды.
+ * Функция копирует данные в TX-очередь; физическую передачу выполняет CAN-задача.
+ */
+void CAN_SendData(uint16_t cmd_code, uint8_t sequence_info,
+                 const uint8_t *data, uint8_t len);
 
 
 // ============================================================

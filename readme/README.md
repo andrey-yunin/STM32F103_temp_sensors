@@ -1,5 +1,26 @@
 # DDS-240 shared documentation pointer
 
+## Current checkpoint — 2026-10-01
+
+Use the [current Thermo handoff](../../DDS-240_readme/DDS-240_eko_system/Thermo/NEXT_SESSION_PROMPT.md).
+T01–T06 have build confirmation; T07 is partially implemented and the user
+confirmed a clean build of its first part. PrepareReset is not connected to
+F002/F006 yet. Continue driver cancellation and domain/map protection before
+dispatcher integration. Testing follows completed unification.
+The older resume-T01 instruction below is historical.
+
+## Current Thermo entry point — 2026-09-30
+
+[Thermo handoff and rules](../../DDS-240_readme/DDS-240_eko_system/Thermo/NEXT_SESSION_PROMPT.md)
+is the active entry point for this project. Use the adjacent Thermo ↔ HC audit
+matrix before each implementation block. T01 is implemented: Debug/model
+PASS, hardware acceptance pending. Next session resumes T01 in Thermo;
+see report §33.14 and the handoff for the remaining check.
+The generic ecosystem handoff below is retained
+as a navigation link, not a replacement for Thermo's current scope.
+
+---
+
 This project uses the shared DDS-240 documentation folder from the STM32CubeIDE
 workspace instead of keeping a local copy of ecosystem documents.
 

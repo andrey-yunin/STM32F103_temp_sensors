@@ -1,5 +1,34 @@
 # STM32F103 Temperature Sensors Executor (DDS-240 Standard)
 
+## Current checkpoint — 2026-10-01
+
+This checkpoint supersedes the historical entry below. Resume from the
+[Thermo handoff](../DDS-240_readme/DDS-240_eko_system/Thermo/NEXT_SESSION_PROMPT.md).
+T01–T06 have build confirmation. T07 is partial: safety API and protected
+1-Wire LOW operations are implemented; the user confirmed a clean build.
+PrepareReset is not yet called by F002/F006. Next: high-level driver
+cancellation, monitor/map protection, then dispatcher integration.
+Finish Thermo unification before testing; Studio/Conductor integration follows.
+Firmware changes are entered manually by the user. Hardware acceptance remains
+open; the earlier flashing confirmation covers T01, not subsequent changes.
+
+## Current work — 2026-09-30: Thermo unification, T01 implemented
+
+Start with the [Thermo entry point and working rules](../DDS-240_readme/DDS-240_eko_system/Thermo/NEXT_SESSION_PROMPT.md)
+and the [source audit matrix](../DDS-240_readme/DDS-240_eko_system/Thermo/THERMO_HC_UNIFICATION_MATRIX.md).
+T01 is implemented and directly compared with HC: two hardware CAN banks
+(COMMAND/broadcast and COMMAND/runtime NodeID), updated before DONE in F005.
+Full Debug rebuild and host filter model passed. Flashing and hardware
+acceptance remain pending; resume here next session. Other changes require
+separate discussion. See the Thermo report §33.14 for evidence.
+
+The common-layer reference is HC, limited to verified blocks. Preserve the
+Thermo DS18B20 domain. Historical descriptions below are not acceptance claims:
+there are four RTOS tasks, and
+Release source/include configuration requires correction (T16).
+
+---
+
 ![STM32](https://img.shields.io/badge/MCU-STM32F103-blue.svg)
 ![FreeRTOS](https://img.shields.io/badge/RTOS-FreeRTOS%20(CMSIS--V2)-green.svg)
 ![Protocol](https://img.shields.io/badge/Protocol-DDS--240%20(CAN%202.0B)-orange.svg)

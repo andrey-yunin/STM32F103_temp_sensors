@@ -5,7 +5,6 @@
  *      Author: andrey
  */
 
-
 #include "task_temp_monitor.h"
 #include "cmsis_os.h"
 #include "app_queues.h"
@@ -16,12 +15,10 @@
 #include <string.h>
 #include <stdbool.h>
 
-
 #define TEMP_MONITOR_CONVERSION_TIMEOUT_MS 800U
 #define TEMP_MONITOR_CONVERSION_POLL_MS    10U
 #define TEMP_MONITOR_IDLE_DELAY_MS         2000U
 #define TEMP_MONITOR_NO_PENDING_SENSOR     0xFFU
-
 
 // --- Инкапсулированные данные (скрыты внутри модуля) ---
 static float s_latest_temperatures[DS18B20_MAX_SENSORS];
@@ -32,36 +29,30 @@ static bool s_rom_map_pending = false;
 
 static osMutexId_t tempMutex = NULL;
 
-const osMutexAttr_t tempMutex_attr = {
-		"tempMutex",
-		osMutexPrioInherit,
-		NULL,
-			0U
-			};
+const osMutexAttr_t tempMutex_attr = { "tempMutex",
+osMutexPrioInherit,
+NULL, 0U };
 
-static void TempMonitor_ClearPendingMap(void)
-{
+static void TempMonitor_ClearPendingMap(void) {
 	memset(s_rom_id_buffer, 0xFF, sizeof(s_rom_id_buffer));
 	s_rom_map_pending_sensor_id = TEMP_MONITOR_NO_PENDING_SENSOR;
 	s_rom_map_pending = false;
 }
 
-static bool TempMonitor_IsEmptyROM(const DS18B20_ROM_t* rom)
-{
+static bool TempMonitor_IsEmptyROM(const DS18B20_ROM_t *rom) {
 	if (rom == NULL) {
 		return false;
-		}
+	}
 
 	for (uint8_t i = 0; i < sizeof(rom->rom_code); i++) {
 		if (rom->rom_code[i] != 0xFFU) {
 			return false;
-			}
 		}
+	}
 	return true;
 }
 
-static bool TempMonitor_IsActiveMappedChannel(uint8_t sensor_id)
-{
+static bool TempMonitor_IsActiveMappedChannel(uint8_t sensor_id) {
 	DS18B20_ROM_t mapped_rom;
 
 	if (sensor_id >= DS18B20_MAX_SENSORS) {
@@ -78,9 +69,7 @@ static bool TempMonitor_IsActiveMappedChannel(uint8_t sensor_id)
 	return DS18B20_IsValidROM(&mapped_rom);
 }
 
-
-static uint16_t TempMonitor_NormalizeSampleError(uint16_t sample_error)
-{
+static uint16_t TempMonitor_NormalizeSampleError(uint16_t sample_error) {
 	switch (sample_error) {
 	case CAN_ERR_THERMO_COMM:
 	case CAN_ERR_THERMO_CONVERSION_TIMEOUT:
@@ -91,40 +80,37 @@ static uint16_t TempMonitor_NormalizeSampleError(uint16_t sample_error)
 	}
 }
 
-
 static uint16_t TempMonitor_SelectAggregateSampleError(uint16_t current_error,
-                                                       uint16_t candidate_error)
-{
-	uint16_t normalized_candidate = TempMonitor_NormalizeSampleError(candidate_error);
+		uint16_t candidate_error) {
+	uint16_t normalized_candidate = TempMonitor_NormalizeSampleError(
+			candidate_error);
 
-	if (current_error == CAN_ERR_THERMO_CONVERSION_TIMEOUT ||
-	    normalized_candidate == CAN_ERR_THERMO_CONVERSION_TIMEOUT) {
+	if (current_error == CAN_ERR_THERMO_CONVERSION_TIMEOUT
+			|| normalized_candidate == CAN_ERR_THERMO_CONVERSION_TIMEOUT) {
 		return CAN_ERR_THERMO_CONVERSION_TIMEOUT;
 	}
 
-	if (current_error == CAN_ERR_THERMO_COMM ||
-	    normalized_candidate == CAN_ERR_THERMO_COMM) {
+	if (current_error == CAN_ERR_THERMO_COMM
+			|| normalized_candidate == CAN_ERR_THERMO_COMM) {
 		return CAN_ERR_THERMO_COMM;
 	}
 
 	return CAN_ERR_SENSOR_FAILURE;
 }
 
-
-static void TempMonitor_SetSample(uint8_t index, float value, uint16_t sample_error)
-{
+static void TempMonitor_SetSample(uint8_t index, float value,
+		uint16_t sample_error) {
 	if (index < DS18B20_MAX_SENSORS && tempMutex != NULL) {
 		if (osMutexAcquire(tempMutex, osWaitForever) == osOK) {
 			s_latest_temperatures[index] = value;
 			s_latest_sample_errors[index] = sample_error;
 			osMutexRelease(tempMutex);
-			}
 		}
+	}
 }
 
-
-static void TempMonitor_GetSample(uint8_t index, float* out_value, uint16_t* out_error)
-{
+static void TempMonitor_GetSample(uint8_t index, float *out_value,
+		uint16_t *out_error) {
 	float value = -999.0f;
 	uint16_t sample_error = CAN_ERR_SENSOR_FAILURE;
 
@@ -133,8 +119,8 @@ static void TempMonitor_GetSample(uint8_t index, float* out_value, uint16_t* out
 			value = s_latest_temperatures[index];
 			sample_error = s_latest_sample_errors[index];
 			osMutexRelease(tempMutex);
-			}
 		}
+	}
 
 	if (out_value != NULL) {
 		*out_value = value;
@@ -145,28 +131,22 @@ static void TempMonitor_GetSample(uint8_t index, float* out_value, uint16_t* out
 	}
 }
 
-
-static void TempMonitor_SetTemperature(uint8_t index, float value)
-{
+static void TempMonitor_SetTemperature(uint8_t index, float value) {
 	TempMonitor_SetSample(index, value, CAN_ERR_NONE);
 }
 
-
-static void TempMonitor_SetSampleError(uint8_t index, uint16_t sample_error)
-{
-	TempMonitor_SetSample(index, -999.0f, TempMonitor_NormalizeSampleError(sample_error));
+static void TempMonitor_SetSampleError(uint8_t index, uint16_t sample_error) {
+	TempMonitor_SetSample(index, -999.0f,
+			TempMonitor_NormalizeSampleError(sample_error));
 }
 
-
-static void TempMonitor_InvalidateAllTemperatures(uint16_t sample_error)
-{
+static void TempMonitor_InvalidateAllTemperatures(uint16_t sample_error) {
 	for (uint8_t i = 0; i < DS18B20_MAX_SENSORS; i++) {
 		TempMonitor_SetSampleError(i, sample_error);
 	}
 }
 
-static bool TempMonitor_WaitConversionComplete(uint32_t timeout_ms)
-{
+static bool TempMonitor_WaitConversionComplete(uint32_t timeout_ms) {
 	uint32_t elapsed_ms = 0U;
 
 	while (elapsed_ms < timeout_ms) {
@@ -189,9 +169,7 @@ static bool TempMonitor_WaitConversionComplete(uint32_t timeout_ms)
 	return DS18B20_IsConversionComplete();
 }
 
-
-static void TempMonitor_SendTemperature(uint16_t cmd_code, uint8_t sensor_id)
-{
+static void TempMonitor_SendTemperature(uint16_t cmd_code, uint8_t sensor_id) {
 	if (!TempMonitor_IsActiveMappedChannel(sensor_id)) {
 		/*
 		 * Канал существует как индекс, но не привязан к валидному DS18B20 ROM.
@@ -209,13 +187,14 @@ static void TempMonitor_SendTemperature(uint16_t cmd_code, uint8_t sensor_id)
 
 	if (raw_t > -100.0f) {
 		// Формат температуры: int16, десятые доли градуса Celsius, little-endian.
-		int16_t tx_val = (int16_t)(raw_t * 10.0f);
+		int16_t tx_val = (int16_t) (raw_t * 10.0f);
 		uint8_t data[2];
 
-		data[0] = (uint8_t)(tx_val & 0xFF);
-		data[1] = (uint8_t)((tx_val >> 8) & 0xFF);
+		data[0] = (uint8_t) (tx_val & 0xFF);
+		data[1] = (uint8_t) ((tx_val >> 8) & 0xFF);
 
-		CAN_SendData(cmd_code, data, sizeof(data));
+		/* Одна температура — самостоятельный DATA; канал указан в запросе/DONE. */
+		CAN_SendData(cmd_code, CAN_DATA_SEQ_EOT_MASK, data, sizeof(data));
 		CAN_SendDone(cmd_code, sensor_id);
 	}
 
@@ -226,9 +205,7 @@ static void TempMonitor_SendTemperature(uint16_t cmd_code, uint8_t sensor_id)
 
 }
 
-
-static void TempMonitor_SendAllTemperatures(uint16_t cmd_code)
-{
+static void TempMonitor_SendAllTemperatures(uint16_t cmd_code) {
 	uint8_t active_count = 0U;
 	uint8_t valid_count = 0U;
 	uint16_t aggregate_error = CAN_ERR_SENSOR_FAILURE;
@@ -246,19 +223,22 @@ static void TempMonitor_SendAllTemperatures(uint16_t cmd_code)
 		TempMonitor_GetSample(i, &t, &sample_error);
 
 		if (t > -100.0f) {
-			int16_t tx_v = (int16_t)(t * 10.0f);
+			int16_t tx_v = (int16_t) (t * 10.0f);
 			uint8_t data[3];
 
 			data[0] = i;
-			data[1] = (uint8_t)(tx_v & 0xFF);
-			data[2] = (uint8_t)((tx_v >> 8) & 0xFF);
+			data[1] = (uint8_t) (tx_v & 0xFF);
+			data[2] = (uint8_t) ((tx_v >> 8) & 0xFF);
 
-			CAN_SendData(cmd_code, data, sizeof(data));
+			/*
+			 * Одна запись содержит канал и его температуру.
+			 * Каждая запись завершена; весь набор завершается существующим DONE.
+			 */
+			CAN_SendData(cmd_code, CAN_DATA_SEQ_EOT_MASK, data, sizeof(data));
 			valid_count++;
-		}
-		else {
-			aggregate_error =
-					TempMonitor_SelectAggregateSampleError(aggregate_error, sample_error);
+		} else {
+			aggregate_error = TempMonitor_SelectAggregateSampleError(
+					aggregate_error, sample_error);
 		}
 	}
 
@@ -268,60 +248,75 @@ static void TempMonitor_SendAllTemperatures(uint16_t cmd_code)
 	 */
 	if (active_count == 0U) {
 		CAN_SendNack(cmd_code, CAN_ERR_THERMO_SENSOR_NOT_FOUND);
-	}
-	else if (valid_count == 0U) {
+	} else if (valid_count == 0U) {
 		CAN_SendNack(cmd_code, aggregate_error);
-		}
+	}
 
 	else {
 		CAN_SendDone(cmd_code, 0xFF);
 	}
 }
 
+// --- F102: компактный идентификатор обнаруженного датчика ---
 
-static void TempMonitor_SendPhysId(uint16_t cmd_code, uint8_t sensor_id)
-{
-	DS18B20_ROM_t* rom = DS18B20_GetROM(sensor_id);
+/*
+ * Домен Thermo читает ROM из списка последнего обнаружения.
+ * После проверки family и исходного CRC передаёт все шесть байтов serial.
+ * Физический индекс определяется запросом и повторяется в DONE.
+ * Новое сканирование и температурное преобразование здесь не запускаются.
+ */
+static void TempMonitor_SendPhysId(uint16_t cmd_code, uint8_t sensor_id) {
+	const DS18B20_ROM_t *rom = DS18B20_GetROM(sensor_id);
 
-	if (rom != NULL) {
-		uint8_t data[9];
-		data[0] = sensor_id;
-		memcpy(&data[1], rom->rom_code, sizeof(rom->rom_code));
-
-		// DATA frame несет максимум 6 байт полезной нагрузки,
-		// поэтому 64-bit ROM ID передается двумя CAN DATA кадрами.
-		CAN_SendData(cmd_code, data, 6);
-		CAN_SendData(cmd_code, &data[6], 3);
-		CAN_SendDone(cmd_code, sensor_id);
-		}
-	else {
+	if (rom == NULL) {
 		CAN_SendNack(cmd_code, CAN_ERR_INVALID_SENSOR_ID);
-		}
-}
+		return;
+	}
 
-static void TempMonitor_SendChannelMap(uint16_t cmd_code, uint8_t sensor_id)
-{
-	DS18B20_ROM_t mapped_rom;
-	uint8_t data[9];
+	if (!DS18B20_IsValidROM(rom)) {
+		CAN_SendNack(cmd_code, CAN_ERR_THERMO_SENSOR_FAILURE);
+		return;
+	}
 
-	AppConfig_GetSensorROM(sensor_id, &mapped_rom);
-
-	data[0] = sensor_id;
-	memcpy(&data[1], mapped_rom.rom_code, sizeof(mapped_rom.rom_code));
-
-	CAN_SendData(cmd_code, data, 6);
-	CAN_SendData(cmd_code, &data[6], 3);
+	CAN_SendData(cmd_code, CAN_DATA_SEQ_EOT_MASK, &rom->rom_code[1], 6U);
 	CAN_SendDone(cmd_code, sensor_id);
 }
 
-static void TempMonitor_ProcessCommand(const ThermoCommand_t *cmd)
-{
+// --- F104: компактный идентификатор привязанного датчика ---
+
+/*
+ * Домен читает сохранённую привязку логического канала.
+ * Полный ROM остаётся в конфигурации, по CAN передаются ROM[1..6].
+ * Пустая привязка FF..FF даёт E401 без DATA/DONE.
+ * Непустой, но некорректный ROM даёт E400: это не пустой канал.
+ * Ответ подтверждает содержимое маппинга, а не присутствие датчика на шине.
+ */
+static void TempMonitor_SendChannelMap(uint16_t cmd_code, uint8_t sensor_id) {
+	DS18B20_ROM_t mapped_rom = { 0 };
+
+	AppConfig_GetSensorROM(sensor_id, &mapped_rom);
+
+	if (TempMonitor_IsEmptyROM(&mapped_rom)) {
+		CAN_SendNack(cmd_code, CAN_ERR_THERMO_SENSOR_NOT_FOUND);
+		return;
+	}
+
+	if (!DS18B20_IsValidROM(&mapped_rom)) {
+		CAN_SendNack(cmd_code, CAN_ERR_THERMO_SENSOR_FAILURE);
+		return;
+	}
+
+	CAN_SendData(cmd_code, CAN_DATA_SEQ_EOT_MASK, &mapped_rom.rom_code[1], 6U);
+	CAN_SendDone(cmd_code, sensor_id);
+}
+
+static void TempMonitor_ProcessCommand(const ThermoCommand_t *cmd) {
 	switch (cmd->cmd_code) {
 	case CAN_CMD_SENSOR_GET_TEMP:
 		if (cmd->sensor_id >= DS18B20_MAX_SENSORS) {
 			CAN_SendNack(cmd->cmd_code, CAN_ERR_INVALID_SENSOR_ID);
 			break;
-			}
+		}
 		TempMonitor_SendTemperature(cmd->cmd_code, cmd->sensor_id);
 		break;
 
@@ -333,16 +328,19 @@ static void TempMonitor_ProcessCommand(const ThermoCommand_t *cmd)
 		uint8_t count = DS18B20_Init();
 		uint8_t data[1];
 		data[0] = count;
-		CAN_SendData(cmd->cmd_code, data, sizeof(data));
+
+		/* Количество обнаруженных датчиков помещается в один DATA. */
+		CAN_SendData(cmd->cmd_code, CAN_DATA_SEQ_EOT_MASK, data, sizeof(data));
+		/* DONE завершает сканирование и подтверждает количество датчиков. */
 		CAN_SendDone(cmd->cmd_code, count);
 		break;
-		}
+	}
 
 	case CAN_CMD_SRV_GET_PHYS_ID:
 		if (cmd->sensor_id >= DS18B20_MAX_SENSORS) {
 			CAN_SendNack(cmd->cmd_code, CAN_ERR_INVALID_SENSOR_ID);
 			break;
-			}
+		}
 		TempMonitor_SendPhysId(cmd->cmd_code, cmd->sensor_id);
 		break;
 
@@ -350,12 +348,12 @@ static void TempMonitor_ProcessCommand(const ThermoCommand_t *cmd)
 		if (cmd->sensor_id >= DS18B20_MAX_SENSORS) {
 			CAN_SendNack(cmd->cmd_code, CAN_ERR_INVALID_SENSOR_ID);
 			break;
-			}
+		}
 
 		if (cmd->data_len < 4U) {
 			CAN_SendNack(cmd->cmd_code, CAN_ERR_INVALID_PARAM);
 			break;
-			}
+		}
 
 		// Phase 1: сохраняем первые 4 байта ROM как незавершенную транзакцию.
 		// data[4] в текущем DLC=8 остается резервным байтом и не входит в ROM.
@@ -366,7 +364,7 @@ static void TempMonitor_ProcessCommand(const ThermoCommand_t *cmd)
 		CAN_SendDone(cmd->cmd_code, cmd->sensor_id);
 		break;
 
-	case CAN_CMD_SRV_GET_CHANNEL_MAP:{
+	case CAN_CMD_SRV_GET_CHANNEL_MAP: {
 		if (cmd->sensor_id >= DS18B20_MAX_SENSORS) {
 			CAN_SendNack(cmd->cmd_code, CAN_ERR_INVALID_SENSOR_ID);
 			break;
@@ -377,8 +375,6 @@ static void TempMonitor_ProcessCommand(const ThermoCommand_t *cmd)
 		break;
 	}
 
-
-
 	case CAN_CMD_SRV_SET_CH_MAP_P2: {
 		DS18B20_ROM_t new_rom;
 
@@ -387,9 +383,8 @@ static void TempMonitor_ProcessCommand(const ThermoCommand_t *cmd)
 			break;
 		}
 
-		if (cmd->data_len < 4U ||
-		    !s_rom_map_pending ||
-		    s_rom_map_pending_sensor_id != cmd->sensor_id) {
+		if (cmd->data_len < 4U || !s_rom_map_pending
+				|| s_rom_map_pending_sensor_id != cmd->sensor_id) {
 			TempMonitor_ClearPendingMap();
 			CAN_SendNack(cmd->cmd_code, CAN_ERR_INVALID_PARAM);
 			break;
@@ -400,21 +395,21 @@ static void TempMonitor_ProcessCommand(const ThermoCommand_t *cmd)
 		memcpy(new_rom.rom_code, s_rom_id_buffer, sizeof(new_rom.rom_code));
 
 		// Допускаем два состояния:
-		 // 1. валидный DS18B20 ROM;
-		 // 2. 0xFF..0xFF как пустой, очищенный канал.
-		 if (!TempMonitor_IsEmptyROM(&new_rom) && !DS18B20_IsValidROM(&new_rom)) {
-			 TempMonitor_ClearPendingMap();
-			 CAN_SendNack(cmd->cmd_code, CAN_ERR_INVALID_PARAM);
-			 break;
-			 }
-
+		// 1. валидный DS18B20 ROM;
+		// 2. 0xFF..0xFF как пустой, очищенный канал.
+		if (!TempMonitor_IsEmptyROM(&new_rom)
+				&& !DS18B20_IsValidROM(&new_rom)) {
+			TempMonitor_ClearPendingMap();
+			CAN_SendNack(cmd->cmd_code, CAN_ERR_INVALID_PARAM);
+			break;
+		}
 
 		AppConfig_SetSensorROM(cmd->sensor_id, &new_rom);
 		TempMonitor_ClearPendingMap();
 
 		CAN_SendDone(cmd->cmd_code, cmd->sensor_id);
 		break;
-		}
+	}
 
 	default:
 		CAN_SendNack(cmd->cmd_code, CAN_ERR_UNKNOWN_CMD);
@@ -423,60 +418,53 @@ static void TempMonitor_ProcessCommand(const ThermoCommand_t *cmd)
 	}
 }
 
-static bool TempMonitor_ProcessPendingCommands(uint32_t timeout_ms)
-{
+static bool TempMonitor_ProcessPendingCommands(uint32_t timeout_ms) {
 	ThermoCommand_t cmd;
-    bool processed = false;
+	bool processed = false;
 
-    if (osMessageQueueGet(thermo_queueHandle, &cmd, NULL, timeout_ms) == osOK) {
-      processed = true;
-      TempMonitor_ProcessCommand(&cmd);
+	if (osMessageQueueGet(thermo_queueHandle, &cmd, NULL, timeout_ms) == osOK) {
+		processed = true;
+		TempMonitor_ProcessCommand(&cmd);
 
-      /*
-       * После пробуждения очищаем очередь без ожидания, чтобы серия команд
-       * не застревала за очередным циклом измерения.
-       */
-      while (osMessageQueueGet(thermo_queueHandle, &cmd, NULL, 0) == osOK) {
-        processed = true;
-        TempMonitor_ProcessCommand(&cmd);
-      }
-    }
+		/*
+		 * После пробуждения очищаем очередь без ожидания, чтобы серия команд
+		 * не застревала за очередным циклом измерения.
+		 */
+		while (osMessageQueueGet(thermo_queueHandle, &cmd, NULL, 0) == osOK) {
+			processed = true;
+			TempMonitor_ProcessCommand(&cmd);
+		}
+	}
 
-    return processed;
+	return processed;
 }
 
-
-static void TempMonitor_ProcessPendingCommandsWithHeartbeat(uint32_t total_timeout_ms)
-{
+static void TempMonitor_ProcessPendingCommandsWithHeartbeat(
+		uint32_t total_timeout_ms) {
 	uint32_t elapsed_ms = 0U;
 
-    while (elapsed_ms < total_timeout_ms)
-    {
-	uint32_t wait_ms = APP_WATCHDOG_TASK_IDLE_TIMEOUT_MS;
-	uint32_t remaining_ms = total_timeout_ms - elapsed_ms;
+	while (elapsed_ms < total_timeout_ms) {
+		uint32_t wait_ms = APP_WATCHDOG_TASK_IDLE_TIMEOUT_MS;
+		uint32_t remaining_ms = total_timeout_ms - elapsed_ms;
 
-	if (remaining_ms < wait_ms)
-		{
-		wait_ms = remaining_ms;
+		if (remaining_ms < wait_ms) {
+			wait_ms = remaining_ms;
 		}
-	AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
-
-	/*
-	 * Если команда пришла, сохраняем старое поведение:
-	 * обрабатываем ее и сразу выходим в новый цикл измерения.
-         */
-	if (TempMonitor_ProcessPendingCommands(wait_ms))
-		{
 		AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
-		return;
+
+		/*
+		 * Если команда пришла, сохраняем старое поведение:
+		 * обрабатываем ее и сразу выходим в новый цикл измерения.
+		 */
+		if (TempMonitor_ProcessPendingCommands(wait_ms)) {
+			AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
+			return;
 		}
 
-	AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
-	elapsed_ms += wait_ms;
+		AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
+		elapsed_ms += wait_ms;
 	}
 }
-
-
 
 // --- Публичный API доступа к данным ---
 /**
@@ -494,8 +482,7 @@ float TempMonitor_GetTemperature(uint8_t index) {
  * @brief Задача мониторинга температуры.
  * Реализует промышленный цикл: Broadcast Start -> RTOS Wait -> Match ROM Read.
  */
-void app_start_task_temp_monitor(void *argument)
-{
+void app_start_task_temp_monitor(void *argument) {
 	// 1. Инициализация мьютекса защиты данных
 	tempMutex = osMutexNew(&tempMutex_attr);
 
@@ -503,13 +490,13 @@ void app_start_task_temp_monitor(void *argument)
 	for (uint8_t i = 0; i < DS18B20_MAX_SENSORS; i++) {
 		s_latest_temperatures[i] = -999.0f;
 		s_latest_sample_errors[i] = CAN_ERR_SENSOR_FAILURE;
-		}
+	}
 
 	// Буферы для работы в цикле
 	DS18B20_ROM_t target_rom;
 	float current_temp = 0.0f;
 
-	for(;;) {
+	for (;;) {
 		AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
 
 		// Сначала обслуживаем команды, которые уже пришли от Dispatcher.
@@ -522,8 +509,8 @@ void app_start_task_temp_monitor(void *argument)
 		bool conversion_ready = false;
 
 		if (conversion_started) {
-			conversion_ready =
-					TempMonitor_WaitConversionComplete(TEMP_MONITOR_CONVERSION_TIMEOUT_MS);
+			conversion_ready = TempMonitor_WaitConversionComplete(
+			TEMP_MONITOR_CONVERSION_TIMEOUT_MS);
 		}
 
 		if (!conversion_ready) {
@@ -533,20 +520,20 @@ void app_start_task_temp_monitor(void *argument)
 			 * а не conversion timeout; это low-level COMM.
 			 */
 			uint16_t sample_error = conversion_started ?
-					CAN_ERR_THERMO_CONVERSION_TIMEOUT :
-					CAN_ERR_THERMO_COMM;
+			CAN_ERR_THERMO_CONVERSION_TIMEOUT :
+															CAN_ERR_THERMO_COMM;
 
 			TempMonitor_InvalidateAllTemperatures(sample_error);
 			DS18B20_BusRelease();
 
 			AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
-			TempMonitor_ProcessPendingCommandsWithHeartbeat(TEMP_MONITOR_IDLE_DELAY_MS);
+			TempMonitor_ProcessPendingCommandsWithHeartbeat(
+			TEMP_MONITOR_IDLE_DELAY_MS);
 			AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
 			continue;
 		}
 
 		AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
-
 
 		// 4. ОПРОС ПО ТАБЛИЦЕ МАППИНГА (из Flash)
 		for (uint8_t i = 0; i < DS18B20_MAX_SENSORS; i++) {
@@ -555,18 +542,16 @@ void app_start_task_temp_monitor(void *argument)
 
 			// Читаем только валидно привязанный DS18B20 ROM: family code + CRC.
 			if (DS18B20_IsValidROM(&target_rom)) {
-				DS18B20_ReadResult_t read_result =
-						DS18B20_ReadTemperature(&target_rom, &current_temp);
+				DS18B20_ReadResult_t read_result = DS18B20_ReadTemperature(
+						&target_rom, &current_temp);
 
 				if (read_result == DS18B20_READ_OK) {
 					TempMonitor_SetTemperature(i, current_temp);
-				}
-				else {
+				} else {
 					// Ошибка чтения DS18B20: no presence / read failure / CRC mismatch.
 					TempMonitor_SetSampleError(i, CAN_ERR_THERMO_COMM);
 				}
-			}
-			else {
+			} else {
 				// Канал не настроен (пусто во Flash)
 				TempMonitor_SetSampleError(i, CAN_ERR_SENSOR_FAILURE);
 			}
@@ -580,7 +565,8 @@ void app_start_task_temp_monitor(void *argument)
 		 * Если команда пришла, helper обработает ее и сразу вернет задачу в новый цикл измерения.
 		 */
 
-		TempMonitor_ProcessPendingCommandsWithHeartbeat(TEMP_MONITOR_IDLE_DELAY_MS);
+		TempMonitor_ProcessPendingCommandsWithHeartbeat(
+		TEMP_MONITOR_IDLE_DELAY_MS);
 
 		AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
 	}

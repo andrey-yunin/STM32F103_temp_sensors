@@ -19,6 +19,7 @@
 #include "can_protocol.h"
 #include "app_flash.h"
 #include "task_watchdog.h"
+#include <stdbool.h>
 #include <string.h>
 
 // --- Внешние хэндлы HAL ---
@@ -26,6 +27,115 @@ extern CAN_HandleTypeDef hcan; // Хэндл CAN-периферии из main.c
 extern osThreadId_t task_can_handleHandle;
 
 static volatile CanDiagnostics_t g_can_diag;
+
+// --- Аппаратная фильтрация CAN ---
+
+/*
+ * Общий механизм HC: bank0 принимает broadcast COMMAND, bank1 — direct
+ * COMMAND на текущий NodeID. Приоритет и источник не входят в маску.
+ * Программная проверка принятых кадров сохраняется в CAN-задаче.
+ * Фильтр задаётся в координатах bxCAN: Extended ID сдвигается на 3 бита.
+ */
+#define CAN_FILTER_MSGTYPE_DST_MASK (0x03FFUL << 19)
+#define CAN_FILTER_IDE              (1UL << 2)
+
+/* Настраивает один банк; ошибка HAL переводит плату в аварийный путь. */
+static void CAN_ConfigureFilterBank(uint8_t bank, uint8_t destination) {
+	CAN_FilterTypeDef filter_config;
+	uint32_t filter_id;
+	uint32_t filter_mask;
+	uint32_t filter_reg;
+
+	memset(&filter_config, 0, sizeof(filter_config));
+
+	/*
+	 * The filter accepts only COMMAND frames addressed to the selected
+	 * destination. The source address remains unfiltered at hardware level.
+	 */
+	filter_id = CAN_BUILD_ID(0U, CAN_MSG_TYPE_COMMAND, destination, 0U);
+
+	/*
+	 * Both identifier and mask use bxCAN filter-register coordinates.
+	 * The Extended CAN ID is shifted by three bits before being written.
+	 */
+	filter_reg = (filter_id << 3) | CAN_FILTER_IDE;
+	filter_mask = CAN_FILTER_MSGTYPE_DST_MASK | CAN_FILTER_IDE;
+
+	filter_config.FilterBank = bank;
+	filter_config.FilterMode = CAN_FILTERMODE_IDMASK;
+	filter_config.FilterScale = CAN_FILTERSCALE_32BIT;
+	filter_config.FilterIdHigh = (uint16_t) (filter_reg >> 16);
+	filter_config.FilterIdLow = (uint16_t) (filter_reg & 0xFFFFU);
+	filter_config.FilterMaskIdHigh = (uint16_t) (filter_mask >> 16);
+	filter_config.FilterMaskIdLow = (uint16_t) (filter_mask & 0xFFFFU);
+	filter_config.FilterFIFOAssignment = CAN_RX_FIFO0;
+	filter_config.FilterActivation = ENABLE;
+	filter_config.SlaveStartFilterBank = 14U;
+
+	if (HAL_CAN_ConfigFilter(&hcan, &filter_config) != HAL_OK) {
+		Error_Handler();
+	}
+}
+
+/* Обновляет только direct-банк при F005; broadcast-банк сохраняется. */
+void CAN_UpdateDirectFilter(uint8_t destination) {
+	CAN_ConfigureFilterBank(1U, destination);
+}
+
+// --- Программная проверка входящей команды ---
+
+/*
+ * Общий профиль HC: CAN-задача проверяет кадр до разбора payload и передачи
+ * диспетчеру. Первое нарушение завершает проверку без ACK/NACK; только
+ * IDE/DLC/type/dst увеличивают стандартные DROP-счётчики F007.
+ * RTR и source отбрасываются без новых метрик. Broadcast проходит те же
+ * проверки, что и direct; параметры команды проверяются прикладным слоем.
+ */
+static bool CAN_IsAcceptedCommand(const CanRxFrame_t *rx_frame) {
+	uint8_t destination;
+	uint8_t source;
+	uint8_t node_id;
+
+	if (rx_frame == NULL) {
+		return false;
+	}
+
+	if (rx_frame->header.IDE != CAN_ID_EXT) {
+		g_can_diag.dropped_not_ext++;
+		return false;
+	}
+
+	if (rx_frame->header.RTR != CAN_RTR_DATA) {
+		return false;
+	}
+
+	if (rx_frame->header.DLC != 8U) {
+		g_can_diag.dropped_wrong_dlc++;
+		return false;
+	}
+
+	if (CAN_GET_MSG_TYPE(rx_frame->header.ExtId) != CAN_MSG_TYPE_COMMAND) {
+		g_can_diag.dropped_wrong_type++;
+		return false;
+	}
+
+	destination = CAN_GET_DST_ADDR(rx_frame->header.ExtId);
+	source = CAN_GET_SRC_ADDR(rx_frame->header.ExtId);
+	node_id = (uint8_t) AppConfig_GetPerformerID();
+
+	if (source != CAN_ADDR_CONDUCTOR) {
+		return false;
+	}
+
+	if ((destination != node_id) && (destination != CAN_ADDR_BROADCAST)) {
+		g_can_diag.dropped_wrong_dst++;
+		return false;
+	}
+
+	return true;
+}
+
+
 
 void CAN_Diagnostics_GetSnapshot(CanDiagnostics_t *out)
 {
@@ -140,25 +250,49 @@ void CAN_SendDone(uint16_t cmd_code, uint8_t sensor_id) {
 
 }
 
-void CAN_SendData(uint16_t cmd_code, uint8_t *data, uint8_t len) {
-	CanTxFrame_t tx;
-    tx.header.ExtId = CAN_BUILD_ID(CAN_PRIORITY_NORMAL, CAN_MSG_TYPE_DATA_DONE_LOG, CAN_ADDR_CONDUCTOR, AppConfig_GetPerformerID());
-    tx.header.IDE = CAN_ID_EXT;
-    tx.header.RTR = CAN_RTR_DATA;
-    tx.header.DLC = 8; // Unified DLC=8
-    tx.data[0] = CAN_SUB_TYPE_DATA;
-    tx.data[1] = 0x80; // Sequence Info: EOT=1, Seq=0 (для одиночных пакетов)
+// --- Постановка DATA в очередь передачи ---
 
-    for(uint8_t i = 0; i < 6; i++) {
-        if (i < len) tx.data[2 + i] = data[i];
-        else         tx.data[2 + i] = 0x00;
-	}
+/*
+ * Общий механизм : формирует один DATA-кадр с явным sequence_info.
+ * Payload копируется сразу, поэтому вызывающий код может использовать
+ * локальный буфер. Неиспользованные байты заполнены нулями.
+ * cmd_code не включается в DATA: команду определяет контекст транзакции.
+ * Постановка в очередь сама по себе не подтверждает доставку получателю.
+ */
+void CAN_SendData(uint16_t cmd_code, uint8_t sequence_info,
+                 const uint8_t *data, uint8_t len)
+{
+    CanTxFrame_t tx_frame;
+    uint8_t copy_len;
 
-    CAN_QueueTxFrame(&tx);
+    (void)cmd_code;
 
+    memset(&tx_frame, 0, sizeof(tx_frame));
+
+    copy_len = len;
+    if (copy_len > CAN_DATA_PAYLOAD_MAX) {
+        copy_len = CAN_DATA_PAYLOAD_MAX;
+    }
+
+    tx_frame.header.ExtId = CAN_BUILD_ID(
+            CAN_PRIORITY_NORMAL,
+            CAN_MSG_TYPE_DATA_DONE_LOG,
+            CAN_ADDR_CONDUCTOR,
+            AppConfig_GetPerformerID());
+
+    tx_frame.header.IDE = CAN_ID_EXT;
+    tx_frame.header.RTR = CAN_RTR_DATA;
+    tx_frame.header.DLC = CAN_FRAME_DLC;
+
+    tx_frame.data[0] = CAN_SUB_TYPE_DATA;
+    tx_frame.data[1] = sequence_info;
+
+    if ((data != NULL) && (copy_len > 0U)) {
+        memcpy(&tx_frame.data[2], data, copy_len);
+    }
+
+    CAN_QueueTxFrame(&tx_frame);
 }
-
-
 
 
 // ============================================================
@@ -171,23 +305,11 @@ void app_start_task_can_handler(void *argument) {
     CanTxFrame_t tx_frame;
     uint32_t txMailbox;
 
-    // --- Настройка CAN-фильтра (bxCAN Hardware Filter) ---
-    // В экосистеме DDS-240 принимаем 29-bit Extended ID.
-    // Фильтрация по NodeID и типу сообщения выполняется программно ниже.
-    CAN_FilterTypeDef sFilterConfig;
+    // --- Два банка: broadcast и текущий адрес из RAM-конфигурации ---
+    /* Фильтры устанавливаются до запуска CAN и разрешения RX notifications. */
+    CAN_ConfigureFilterBank(0U, CAN_ADDR_BROADCAST);
+    CAN_ConfigureFilterBank(1U, (uint8_t)AppConfig_GetPerformerID());
 
-    sFilterConfig.FilterBank = 0;
-    sFilterConfig.FilterMode = CAN_FILTERMODE_IDMASK;
-    sFilterConfig.FilterScale = CAN_FILTERSCALE_32BIT;
-    sFilterConfig.FilterIdHigh = 0x0000;
-    sFilterConfig.FilterIdLow = 0x0000 | (1 << 2); // IDE=1
-    sFilterConfig.FilterMaskIdHigh = 0x0000;
-    sFilterConfig.FilterMaskIdLow = 0x0000 | (1 << 2);
-    sFilterConfig.FilterFIFOAssignment = CAN_RX_FIFO0;
-    sFilterConfig.FilterActivation = ENABLE;
-    sFilterConfig.SlaveStartFilterBank = 14;
-
-    if (HAL_CAN_ConfigFilter(&hcan, &sFilterConfig) != HAL_OK) Error_Handler();
     if (HAL_CAN_Start(&hcan) != HAL_OK) Error_Handler();
     if (HAL_CAN_ActivateNotification(&hcan,
 		CAN_IT_RX_FIFO0_MSG_PENDING |
@@ -225,37 +347,10 @@ void app_start_task_can_handler(void *argument) {
          // --- Обработка приема (RX) ---
          if (flags & FLAG_CAN_RX) {
 	 while (osMessageQueueGet(can_rx_queueHandle, &rx_frame, NULL, 0) == osOK) {
-		 // Транспорт принимает только 29-bit Extended ID.
-		 // Некорректный транспортный формат не получает NACK.
-
-		 if (rx_frame.header.IDE != CAN_ID_EXT)
-			 {
-			 g_can_diag.dropped_not_ext++;
+		 // До чтения payload применяем общий программный профиль HC.
+		 if (!CAN_IsAcceptedCommand(&rx_frame)) {
 			 continue;
-			 }
-
-		 uint32_t can_id = rx_frame.header.ExtId;
-		 uint8_t dst_addr = CAN_GET_DST_ADDR(can_id);
-		 uint8_t my_id = (uint8_t)AppConfig_GetPerformerID();
-
-		 // Программная фильтрация: наш NodeID или Broadcast (0x00).
-		 if (dst_addr != my_id && dst_addr != CAN_ADDR_BROADCAST)
-			 {
-			 g_can_diag.dropped_wrong_dst++;
-			 continue;
-			 }
-
-		 if (CAN_GET_MSG_TYPE(can_id) != CAN_MSG_TYPE_COMMAND)
-			 {
-			 g_can_diag.dropped_wrong_type++;
-			 continue;
-			 }
-
-		 // Directive 2.0: Conductor <-> Executor использует строгий DLC=8.
-		 if (rx_frame.header.DLC != 8U) {
-			 g_can_diag.dropped_wrong_dlc++;
-			 continue;
-			 }
+		 }
 
 		 ParsedCanCommand_t parsed;
 		 memset(&parsed, 0, sizeof(parsed));
@@ -318,7 +413,6 @@ void app_start_task_can_handler(void *argument) {
 	 }
          }
 }
-
 
 
 
