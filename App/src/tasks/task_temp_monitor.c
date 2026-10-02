@@ -12,6 +12,8 @@
 #include "can_protocol.h"
 #include "task_watchdog.h"
 #include "ds18b20.h"
+#include "app_safety.h"
+#include "main.h"
 #include <string.h>
 #include <stdbool.h>
 
@@ -37,6 +39,21 @@ static void TempMonitor_ClearPendingMap(void) {
 	memset(s_rom_id_buffer, 0xFF, sizeof(s_rom_id_buffer));
 	s_rom_map_pending_sensor_id = TEMP_MONITOR_NO_PENDING_SENSOR;
 	s_rom_map_pending = false;
+}
+
+// --- Отмена доменной команды при сервисном reset ---
+/*
+ * По модели HC отклоняем работу существующим DEVICE_BUSY.
+ * Буфер привязки очищает только его владелец — задача мониторинга.
+ * Вызов после обмена/ожидания отличает отмену от неисправности датчика.
+ */
+static bool TempMonitor_RejectDuringReset(uint16_t cmd_code) {
+	if (!AppSafety_IsResetPending()) {
+		return false;
+	}
+	TempMonitor_ClearPendingMap();
+	CAN_SendNack(cmd_code, CAN_ERR_DEVICE_BUSY);
+	return true;
 }
 
 static bool TempMonitor_IsEmptyROM(const DS18B20_ROM_t *rom) {
@@ -98,14 +115,28 @@ static uint16_t TempMonitor_SelectAggregateSampleError(uint16_t current_error,
 	return CAN_ERR_SENSOR_FAILURE;
 }
 
+// --- Сохранение результата измерения ---
+
+/*
+ * Задача мониторинга обновляет значение и его ошибку вместе.
+ * Mutex защищает данные от конкурентного чтения.
+ * Отмену измерения обрабатывает вызывающий код.
+ */
 static void TempMonitor_SetSample(uint8_t index, float value,
 		uint16_t sample_error) {
-	if (index < DS18B20_MAX_SENSORS && tempMutex != NULL) {
-		if (osMutexAcquire(tempMutex, osWaitForever) == osOK) {
-			s_latest_temperatures[index] = value;
-			s_latest_sample_errors[index] = sample_error;
-			osMutexRelease(tempMutex);
-		}
+	if (index >= DS18B20_MAX_SENSORS || tempMutex == NULL) {
+		return;
+	}
+
+	if (osMutexAcquire(tempMutex, osWaitForever) != osOK) {
+		return;
+	}
+
+	s_latest_temperatures[index] = value;
+	s_latest_sample_errors[index] = sample_error;
+
+	if (osMutexRelease(tempMutex) != osOK) {
+		Error_Handler();
 	}
 }
 
@@ -146,12 +177,31 @@ static void TempMonitor_InvalidateAllTemperatures(uint16_t sample_error) {
 	}
 }
 
+// --- Ожидание готовности датчиков с учётом отмены ---
+
+/*
+ * Задача мониторинга опрашивает завершение conversion.
+ * При reset прекращает ожидание без дальнейшего опроса шины.
+ * Текущее RTOS-ожидание завершается штатно.
+ *
+ * false означает отсутствие подтверждённой готовности.
+ * Вызывающий код обязан отличать отмену от timeout по reset_pending.
+ * Существующий способ отсчёта времени здесь сохраняется.
+ */
 static bool TempMonitor_WaitConversionComplete(uint32_t timeout_ms) {
 	uint32_t elapsed_ms = 0U;
 
 	while (elapsed_ms < timeout_ms) {
+		if (AppSafety_IsResetPending()) {
+			return false;
+		}
+
 		if (DS18B20_IsConversionComplete()) {
-			return true;
+			return !AppSafety_IsResetPending();
+		}
+
+		if (AppSafety_IsResetPending()) {
+			return false;
 		}
 
 		uint32_t wait_ms = TEMP_MONITOR_CONVERSION_POLL_MS;
@@ -162,8 +212,17 @@ static bool TempMonitor_WaitConversionComplete(uint32_t timeout_ms) {
 		}
 
 		AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
-		osDelay(wait_ms);
+
+		if (osDelay(wait_ms) != osOK) {
+			Error_Handler();
+			return false;
+		}
+
 		elapsed_ms += wait_ms;
+	}
+
+	if (AppSafety_IsResetPending()) {
+		return false;
 	}
 
 	return DS18B20_IsConversionComplete();
@@ -267,6 +326,9 @@ static void TempMonitor_SendAllTemperatures(uint16_t cmd_code) {
  */
 static void TempMonitor_SendPhysId(uint16_t cmd_code, uint8_t sensor_id) {
 	const DS18B20_ROM_t *rom = DS18B20_GetROM(sensor_id);
+	if (TempMonitor_RejectDuringReset(cmd_code)) {
+		return;
+	}
 
 	if (rom == NULL) {
 		CAN_SendNack(cmd_code, CAN_ERR_INVALID_SENSOR_ID);
@@ -311,6 +373,9 @@ static void TempMonitor_SendChannelMap(uint16_t cmd_code, uint8_t sensor_id) {
 }
 
 static void TempMonitor_ProcessCommand(const ThermoCommand_t *cmd) {
+	if (TempMonitor_RejectDuringReset(cmd->cmd_code)) {
+		return;
+	}
 	switch (cmd->cmd_code) {
 	case CAN_CMD_SENSOR_GET_TEMP:
 		if (cmd->sensor_id >= DS18B20_MAX_SENSORS) {
@@ -326,6 +391,9 @@ static void TempMonitor_ProcessCommand(const ThermoCommand_t *cmd) {
 
 	case CAN_CMD_SRV_SCAN_1WIRE: {
 		uint8_t count = DS18B20_Init();
+		if (TempMonitor_RejectDuringReset(cmd->cmd_code)) {
+			break;
+		}
 		uint8_t data[1];
 		data[0] = count;
 
@@ -360,6 +428,11 @@ static void TempMonitor_ProcessCommand(const ThermoCommand_t *cmd) {
 		memcpy(&s_rom_id_buffer[0], cmd->data, 4);
 		s_rom_map_pending_sensor_id = cmd->sensor_id;
 		s_rom_map_pending = true;
+
+		/* При отмене локальная заготовка удаляется, F105 её не применит. */
+		if (TempMonitor_RejectDuringReset(cmd->cmd_code)) {
+			break;
+		}
 
 		CAN_SendDone(cmd->cmd_code, cmd->sensor_id);
 		break;
@@ -404,8 +477,15 @@ static void TempMonitor_ProcessCommand(const ThermoCommand_t *cmd) {
 			break;
 		}
 
-		AppConfig_SetSensorROM(cmd->sensor_id, &new_rom);
+		bool applied = AppConfig_SetSensorROM(cmd->sensor_id, &new_rom);
 		TempMonitor_ClearPendingMap();
+		if (!applied) {
+			if (!TempMonitor_RejectDuringReset(cmd->cmd_code)) {
+				/* Валидная привязка не применена из-за отказа доступа к config. */
+				Error_Handler();
+			}
+			break;
+		}
 
 		CAN_SendDone(cmd->cmd_code, cmd->sensor_id);
 		break;
@@ -486,6 +566,15 @@ void app_start_task_temp_monitor(void *argument) {
 	// 1. Инициализация мьютекса защиты данных
 	tempMutex = osMutexNew(&tempMutex_attr);
 
+	/*
+	 * Mutex защищает согласованное чтение значения и ошибки измерения.
+	 * При отказе создания мониторинг не запускается.
+	 */
+	if (tempMutex == NULL) {
+		Error_Handler();
+		return;
+	}
+
 	// 2. Инициализация массива начальными значениями "Ошибки"
 	for (uint8_t i = 0; i < DS18B20_MAX_SENSORS; i++) {
 		s_latest_temperatures[i] = -999.0f;
@@ -499,6 +588,18 @@ void app_start_task_temp_monitor(void *argument) {
 	for (;;) {
 		AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
 
+		/*
+		 * Подготовка reset прекращает измерения, но не работу RTOS-задачи.
+		 * Как в HC, очередь обслуживается с отказом DEVICE_BUSY.
+		 * Штатное ожидание сохраняет CPU для CAN и dispatcher.
+		 */
+		if (AppSafety_IsResetPending()) {
+			TempMonitor_ClearPendingMap();
+			TempMonitor_ProcessPendingCommands(
+					APP_WATCHDOG_TASK_IDLE_TIMEOUT_MS);
+			continue;
+		}
+
 		// Сначала обслуживаем команды, которые уже пришли от Dispatcher.
 		TempMonitor_ProcessPendingCommands(0);
 
@@ -511,6 +612,11 @@ void app_start_task_temp_monitor(void *argument) {
 		if (conversion_started) {
 			conversion_ready = TempMonitor_WaitConversionComplete(
 			TEMP_MONITOR_CONVERSION_TIMEOUT_MS);
+		}
+
+		/* Отменённая операция не регистрируется как COMM или timeout. */
+		if (AppSafety_IsResetPending()) {
+			continue;
 		}
 
 		if (!conversion_ready) {
@@ -544,6 +650,15 @@ void app_start_task_temp_monitor(void *argument) {
 			if (DS18B20_IsValidROM(&target_rom)) {
 				DS18B20_ReadResult_t read_result = DS18B20_ReadTemperature(
 						&target_rom, &current_temp);
+
+				/*
+				 * Подготовка reset не является отказом датчика.
+				 * Прекращаем обход каналов без записи ошибки.
+				 */
+				if (read_result == DS18B20_READ_CANCELLED
+						|| AppSafety_IsResetPending()) {
+					break;
+				}
 
 				if (read_result == DS18B20_READ_OK) {
 					TempMonitor_SetTemperature(i, current_temp);

@@ -18,6 +18,7 @@
 #include "app_queues.h"       // Для хэндлов очередей
 #include "app_config.h"       // Для ParsedCanCommand_t / ThermoCommand_t
 #include "app_flash.h"
+#include "app_safety.h"
 #include "can_protocol.h"
 #include "task_dispatcher.h"
 #include "task_can_handler.h"
@@ -224,11 +225,20 @@ void app_start_task_dispatcher(void *argument) {
 		}
 
 		case CAN_CMD_SRV_REBOOT: {
+			if (parsed.data_len < 2U) {
+				CAN_SendNack(parsed.cmd_code, CAN_ERR_INVALID_KEY);
+				break;
+			}
 			// Извлекаем Magic Key из параметров (байт 0-1 данных в ParsedCanCommand_t)
 			uint16_t key = (uint16_t) (parsed.data[0] | (parsed.data[1] << 8));
 			if (key == SRV_MAGIC_REBOOT) {
+				/* По HC: запрет домена до ответа, CAN/RTOS продолжают работу. */
+				AppSafety_PrepareReset();
 				CAN_SendDone(parsed.cmd_code, 0);
-				osDelay(100); // Даем время на отправку CAN фрейма
+				/* Окно отправки, не подтверждение доставки. */
+				if (osDelay(100U) != osOK) {
+					Error_Handler();
+				}
 				NVIC_SystemReset();
 			} else {
 				CAN_SendNack(parsed.cmd_code, CAN_ERR_INVALID_KEY);
@@ -276,7 +286,7 @@ void app_start_task_dispatcher(void *argument) {
 			 * Dispatcher проверяет ключ до обращения к Flash.
 			 * Результат стирания определяет DONE или NACK.
 			 * После попытки выполняется reset, как в HC.
-			 * Подготовка домена к reset добавляется отдельным блоком T07.
+			 * Запрет домена устанавливается до стирания и остаётся до reset.
 			 */
 		case CAN_CMD_SRV_FACTORY_RESET: {
 			if (parsed.data_len < 2U) {
@@ -292,6 +302,7 @@ void app_start_task_dispatcher(void *argument) {
 				break;
 			}
 
+			AppSafety_PrepareReset();
 			if (AppConfig_FactoryReset()) {
 				CAN_SendDone(parsed.cmd_code, 0U);
 			} else {
@@ -366,4 +377,3 @@ void app_start_task_dispatcher(void *argument) {
 		}
 	}
 }
-

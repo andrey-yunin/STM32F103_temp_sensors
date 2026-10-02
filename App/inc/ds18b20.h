@@ -13,17 +13,24 @@
 #include "app_config.h"
 
 
+
 // Структура для хранения уникального 64-битного ROM-кода датчика
 typedef struct {
 	uint8_t rom_code[8];
 } DS18B20_ROM_t;
 
+// --- Результат чтения температуры ---
 
+/*
+ * Внутренний контракт драйвера и задачи мониторинга.
+ * CANCELLED означает подготовку MCU к reset, а не отказ датчика.
+ * Этот результат не имеет отдельного кода ошибки CAN.
+ */
 typedef enum {
 	DS18B20_READ_OK = 0,
-	DS18B20_READ_COMM_ERROR
+	DS18B20_READ_COMM_ERROR,
+	DS18B20_READ_CANCELLED
 } DS18B20_ReadResult_t;
-
 
 /**
  * @brief Инициализирует драйвер DS18B20.
@@ -41,17 +48,18 @@ uint8_t DS18B20_Init();
  */
 bool DS18B20_StartAll(void);
 
-
-/**
- * @brief Читает температуру с конкретного DS18B20.
+/*
+ * Читает scratchpad выбранного датчика и проверяет CRC.
+ * out_temp изменяется только после успешного чтения и проверки отмены.
  *
- * COMM_ERROR означает low-level проблему 1-Wire/DS18B20:
- * нет presence pulse, не читается scratchpad или не сходится CRC.
- * Этот результат исполнитель переводит в CAN_ERR_THERMO_COMM.
+ * COMM_ERROR: некорректные аргументы, отсутствие presence или ошибка CRC.
+ * CANCELLED: операция отменена подготовкой MCU к reset.
+ *
+ * Перед сохранением результата домен дополнительно проверяет запрет:
+ * reset может начаться после возврата из драйвера.
  */
-DS18B20_ReadResult_t DS18B20_ReadTemperature(const DS18B20_ROM_t* rom,
-                                             float* out_temp);
-
+DS18B20_ReadResult_t DS18B20_ReadTemperature(const DS18B20_ROM_t *rom,
+		float *out_temp);
 
 /**
  * @brief Предоставляет доступ к ROM-кодам найденных датчиков.

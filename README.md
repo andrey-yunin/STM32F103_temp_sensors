@@ -1,6 +1,14 @@
 # STM32F103 Temperature Sensors Executor (DDS-240 Standard)
 
-## Current checkpoint — 2026-10-01
+## Current checkpoint — 2026-10-02
+
+Resume from the [Thermo handoff](../DDS-240_readme/DDS-240_eko_system/Thermo/NEXT_SESSION_PROMPT.md).
+T07/T08 are BUILD; hardware acceptance remains open. T09 scope is discussed,
+but its code is unchanged: preserve PRIMASK in CAN_Diagnostics_GetSnapshot.
+Define each change's boundaries from the HC reference and Thermo requirements
+before proposing code. Session finished; entries below are historical.
+
+## Historical checkpoint — 2026-10-01
 
 This checkpoint supersedes the historical entry below. Resume from the
 [Thermo handoff](../DDS-240_readme/DDS-240_eko_system/Thermo/NEXT_SESSION_PROMPT.md).

@@ -6,6 +6,7 @@
  */
 
 #include "app_flash.h"
+#include "app_safety.h"
 #include "main.h"
 #include "cmsis_os.h"  // Для osMutex
 #include <string.h>
@@ -81,6 +82,15 @@ void AppConfig_Init(void) {
 	/* Сохраняем существующий порядок создания mutex. */
 	if (configMutex == NULL) {
 		configMutex = osMutexNew(&configMutex_attr);
+	}
+
+	/*
+	 * Как в HC: без mutex конфигурации штатная работа недопустима.
+	 * При отказе создания переходим в существующий аварийный путь.
+	 */
+	if (configMutex == NULL) {
+		Error_Handler();
+		return;
 	}
 
 	flash_cfg = (const AppConfig_t*) APP_CONFIG_FLASH_ADDR;
@@ -164,13 +174,31 @@ void AppConfig_GetSensorROM(uint8_t index, DS18B20_ROM_t *out_rom) {
 	}
 }
 
-void AppConfig_SetSensorROM(uint8_t index, DS18B20_ROM_t *in_rom) {
-	if (index >= DS18B20_MAX_SENSORS || in_rom == NULL)
-		return;
-	if (osMutexAcquire(configMutex, osWaitForever) == osOK) {
+// --- Применение команды изменения привязки ---
+/*
+ * Mutex сериализует доступ к конфигурации. После ожидания проверка reset
+ * и применение восьми байтов защищены вместе: уже начатая F105
+ * не должна менять привязку после PrepareReset. Flash здесь не меняется.
+ */
+bool AppConfig_SetSensorROM(uint8_t index, const DS18B20_ROM_t *in_rom) {
+	if (index >= DS18B20_MAX_SENSORS || in_rom == NULL || configMutex == NULL)
+		return false;
+	if (osMutexAcquire(configMutex, osWaitForever) != osOK)
+		return false;
+
+	const uint32_t saved_primask = __get_PRIMASK();
+	__disable_irq();
+	const bool applied = !AppSafety_IsResetPending();
+	if (applied) {
 		memcpy(&g_app_config.sensors[index], in_rom, sizeof(DS18B20_ROM_t));
-		osMutexRelease(configMutex);
 	}
+	__DSB();
+	__set_PRIMASK(saved_primask);
+	if (osMutexRelease(configMutex) != osOK) {
+		Error_Handler();
+		return false;
+	}
+	return applied;
 }
 
 uint32_t AppConfig_GetPerformerID(void) {
@@ -249,4 +277,3 @@ bool AppConfig_Commit(void) {
 	}
 	return success;
 }
-

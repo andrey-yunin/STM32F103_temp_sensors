@@ -55,9 +55,9 @@ void AppConfig_Init(void);
 void AppConfig_GetSensorROM(uint8_t index, DS18B20_ROM_t *out_rom);
 
 /**
- * @brief Безопасная запись ROM ID для логического канала в RAM.
+ * @brief Запись ROM в RAM; false при отказе или подготовке reset.
  */
-void AppConfig_SetSensorROM(uint8_t index, DS18B20_ROM_t *in_rom);
+bool AppConfig_SetSensorROM(uint8_t index, const DS18B20_ROM_t *in_rom);
 
 /**
  * @brief Безопасная запись CAN ID платы (в RAM).

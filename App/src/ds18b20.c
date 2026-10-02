@@ -10,6 +10,7 @@
 #include "main.h"
 #include "app_config.h"
 
+
 // --- Команды DS18B20 ---
 #define DS18B20_CMD_SEARCHROM     0xF0
 #define DS18B20_CMD_MATCHROM      0x55
@@ -231,141 +232,295 @@ bool DS18B20_IsValidROM(const DS18B20_ROM_t *rom) {
 
 // --- Алгоритм Search ROM (Maxim Integrated) ---
 
+/*
+ * Поиск выполняет только задача мониторинга.
+ * ROM_NO и состояние обхода принадлежат драйверу.
+ *
+ * После отмены прекращаем обмен и сбрасываем состояние поиска.
+ * Состояние поиска и список ROM изменяет только задача мониторинга.
+ */
 bool OneWire_Search(uint8_t *newAddr) {
-	uint8_t id_bit_number = 1, last_zero = 0, rom_byte_number = 0,
-			rom_byte_mask = 1;
-	bool id_bit, cmp_id_bit, search_direction, search_result = false;
+	uint8_t id_bit_number = 1U;
+	uint8_t last_zero = 0U;
+	uint8_t rom_byte_number = 0U;
+	uint8_t rom_byte_mask = 1U;
+	bool search_direction;
 
-	if (!LastDeviceFlag) {
-		if (!OneWire_Reset()) {
-			LastDiscrepancy = 0;
-			LastDeviceFlag = false;
-			return false;
+	if (newAddr == NULL || AppSafety_IsResetPending()) {
+		goto search_failed;
+	}
+
+	if (LastDeviceFlag) {
+		goto search_failed;
+	}
+
+	if (!OneWire_Reset()) {
+		goto search_failed;
+	}
+
+	OneWire_WriteByte(DS18B20_CMD_SEARCHROM);
+
+	while (rom_byte_number < 8U) {
+		if (AppSafety_IsResetPending()) {
+			goto search_failed;
 		}
-		OneWire_WriteByte(DS18B20_CMD_SEARCHROM);
 
-		while (rom_byte_number < 8) {
-			id_bit = OneWire_ReadBit();
-			cmp_id_bit = OneWire_ReadBit();
-			if (id_bit && cmp_id_bit)
-				break; // Ошибка: никто не ответил
-			else {
-				if (id_bit != cmp_id_bit)
-					search_direction = id_bit;
-				else {
-					if (id_bit_number < LastDiscrepancy)
-						search_direction = ((ROM_NO[rom_byte_number]
-								& rom_byte_mask) > 0);
-					else
-						search_direction = (id_bit_number == LastDiscrepancy);
-					if (search_direction == 0)
-						last_zero = id_bit_number;
-				}
-				if (search_direction == 1)
-					ROM_NO[rom_byte_number] |= rom_byte_mask;
-				else
-					ROM_NO[rom_byte_number] &= ~rom_byte_mask;
-				OneWire_WriteBit(search_direction);
-				id_bit_number++;
-				rom_byte_mask <<= 1;
-				if (rom_byte_mask == 0) {
-					rom_byte_number++;
-					rom_byte_mask = 1;
-				}
+		bool id_bit = OneWire_ReadBit();
+		bool cmp_id_bit = OneWire_ReadBit();
+
+		/* Технические биты отмены не участвуют в обходе. */
+		if (AppSafety_IsResetPending() || (id_bit && cmp_id_bit)) {
+			goto search_failed;
+		}
+
+		if (id_bit != cmp_id_bit) {
+			search_direction = id_bit;
+		} else {
+			if (id_bit_number < LastDiscrepancy) {
+				search_direction = (ROM_NO[rom_byte_number] & rom_byte_mask)
+						!= 0U;
+			} else {
+				search_direction = (id_bit_number == LastDiscrepancy);
+			}
+
+			if (!search_direction) {
+				last_zero = id_bit_number;
 			}
 		}
-		if (!(id_bit_number < 65)) {
-			LastDiscrepancy = last_zero;
-			if (LastDiscrepancy == 0)
-				LastDeviceFlag = true;
-			search_result = true;
+
+		if (search_direction) {
+			ROM_NO[rom_byte_number] |= rom_byte_mask;
+		} else {
+			ROM_NO[rom_byte_number] &= (uint8_t) ~rom_byte_mask;
+		}
+
+		OneWire_WriteBit(search_direction);
+
+		if (AppSafety_IsResetPending()) {
+			goto search_failed;
+		}
+
+		id_bit_number++;
+		rom_byte_mask <<= 1U;
+
+		if (rom_byte_mask == 0U) {
+			rom_byte_number++;
+			rom_byte_mask = 1U;
 		}
 	}
-	if (!search_result || !ROM_NO[0]) {
-		LastDiscrepancy = 0;
-		LastDeviceFlag = false;
-		search_result = false;
-	} else {
-		for (int i = 0; i < 8; i++)
-			newAddr[i] = ROM_NO[i];
+
+	if (id_bit_number != 65U || ROM_NO[0] == 0U) {
+		goto search_failed;
 	}
-	return search_result;
+
+	LastDiscrepancy = last_zero;
+	LastDeviceFlag = (LastDiscrepancy == 0U);
+
+	for (uint8_t i = 0U; i < 8U; i++) {
+		newAddr[i] = ROM_NO[i];
+	}
+
+	return true;
+
+	search_failed: LastDiscrepancy = 0U;
+	LastDeviceFlag = false;
+	return false;
 }
 
-// --- Публичные функции драйвера ---
-uint8_t DS18B20_Init() {
-	ds18b20_sensor_count = 0;
-	LastDiscrepancy = 0;
+// --- Обнаружение датчиков на общей шине ---
+
+/*
+ * Задача мониторинга заново формирует список обнаружения.
+ * Сначала ROM читается в локальный буфер, затем проверяется CRC.
+ * Список изменяет только эта задача; запрет IRQ для копирования не нужен.
+ *
+ * При отмене список становится недоступным через нулевой count.
+ * Возвращённый ноль сам по себе не различает отмену и пустую шину:
+ * перед ответом F101 домен обязан проверить reset_pending.
+ */
+uint8_t DS18B20_Init(void) {
+	DS18B20_ROM_t candidate;
+
+	ds18b20_sensor_count = 0U;
+	LastDiscrepancy = 0U;
 	LastDeviceFlag = false;
-	while (OneWire_Search(ds18b20_rom_codes[ds18b20_sensor_count].rom_code)) {
-		if (OneWire_CRC8(ds18b20_rom_codes[ds18b20_sensor_count].rom_code, 7)
-				== ds18b20_rom_codes[ds18b20_sensor_count].rom_code[7]) {
-			ds18b20_sensor_count++;
-		}
-		if (ds18b20_sensor_count >= DS18B20_MAX_SENSORS)
+
+	while (ds18b20_sensor_count < DS18B20_MAX_SENSORS) {
+		if (AppSafety_IsResetPending()) {
 			break;
+		}
+
+		if (!OneWire_Search(candidate.rom_code)) {
+			break;
+		}
+
+		if (AppSafety_IsResetPending()) {
+			break;
+		}
+
+		/* Сохраняем существующий критерий включения в список. */
+		if (OneWire_CRC8(candidate.rom_code, 7U) != candidate.rom_code[7]) {
+			continue;
+		}
+
+		/* В список попадает только проверенный ROM. */
+		ds18b20_rom_codes[ds18b20_sensor_count] = candidate;
+		ds18b20_sensor_count++;
 	}
+
+	if (AppSafety_IsResetPending()) {
+		ds18b20_sensor_count = 0U;
+		LastDiscrepancy = 0U;
+		LastDeviceFlag = false;
+	}
+
 	return ds18b20_sensor_count;
 }
 
+// --- Запуск общего преобразования температуры ---
+
+/*
+ * Вызывается владельцем шины — задачей мониторинга.
+ * Передаёт SKIP ROM и CONVERT T всем датчикам.
+ *
+ * При подготовке MCU к reset возвращает false:
+ * прерванная передача не считается успешным запуском.
+ * Каждый LOW дополнительно защищён на низком уровне.
+ */
 bool DS18B20_StartAll(void) {
+	if (AppSafety_IsResetPending()) {
+		return false;
+	}
+
 	if (!OneWire_Reset()) {
 		return false;
 	}
 
 	OneWire_WriteByte(DS18B20_CMD_SKIPROM);
+
+	if (AppSafety_IsResetPending()) {
+		return false;
+	}
+
 	OneWire_WriteByte(DS18B20_CMD_CONVERTTEMP);
-	return true;
+
+	return !AppSafety_IsResetPending();
 }
 
+// --- Проверка завершения общего преобразования ---
+
+/*
+ * Вызывается задачей мониторинга после CONVERT T,
+ * до следующего reset или другой транзакции 1-Wire.
+ *
+ * При отмене низкоуровневый ReadBit возвращает техническую
+ * единицу. Проверка после чтения не позволяет принять её
+ * за подтверждение готовности датчиков.
+ *
+ * false означает отсутствие подтверждённой готовности.
+ * Отмену и продолжающееся измерение вызывающий код
+ * различает по AppSafety_IsResetPending().
+ */
 bool DS18B20_IsConversionComplete(void) {
-	/*
-	 * После CONVERT T DS18B20 отдает 0, пока измерение выполняется,
-	 * и 1, когда результат готов. На общей шине 0 от любого датчика
-	 * удержит линию в 0, поэтому true означает "готовы все".
-	 */
-	return OneWire_ReadBit();
+	bool complete;
+
+	if (AppSafety_IsResetPending()) {
+		return false;
+	}
+
+	complete = OneWire_ReadBit();
+
+	return !AppSafety_IsResetPending() && complete;
 }
 
+// --- Чтение температуры выбранного датчика ---
+
+/*
+ * Задача мониторинга владеет обменом с датчиком.
+ * Прерванный обмен возвращает CANCELLED и не изменяет out_temp.
+ * Перед использованием результата домен также учитывает отмену.
+ */
 DS18B20_ReadResult_t DS18B20_ReadTemperature(const DS18B20_ROM_t *rom,
 		float *out_temp) {
 	uint8_t scratchpad[9];
+
+	if (AppSafety_IsResetPending()) {
+		return DS18B20_READ_CANCELLED;
+	}
 
 	if (rom == NULL || out_temp == NULL) {
 		return DS18B20_READ_COMM_ERROR;
 	}
 
 	if (!OneWire_Reset()) {
-		return DS18B20_READ_COMM_ERROR;
+		return AppSafety_IsResetPending() ?
+				DS18B20_READ_CANCELLED : DS18B20_READ_COMM_ERROR;
 	}
 
 	OneWire_WriteByte(DS18B20_CMD_MATCHROM);
-	for (uint8_t i = 0; i < 8; i++) {
+
+	for (uint8_t i = 0U; i < 8U; i++) {
+		if (AppSafety_IsResetPending()) {
+			return DS18B20_READ_CANCELLED;
+		}
+
 		OneWire_WriteByte(rom->rom_code[i]);
 	}
 
+	if (AppSafety_IsResetPending()) {
+		return DS18B20_READ_CANCELLED;
+	}
+
 	OneWire_WriteByte(DS18B20_CMD_READSCRATCH);
-	for (uint8_t i = 0; i < 9; i++) {
+
+	for (uint8_t i = 0U; i < 9U; i++) {
+		if (AppSafety_IsResetPending()) {
+			return DS18B20_READ_CANCELLED;
+		}
+
 		scratchpad[i] = OneWire_ReadByte();
 	}
 
-	/*
-	 * CRC mismatch is a real read integrity failure on the 1-Wire path.
-	 * It must be reported as COMM, not as a generic missing sample.
-	 */
-	if (OneWire_CRC8(scratchpad, 8) != scratchpad[8]) {
-		return DS18B20_READ_COMM_ERROR;
+	/* Не принимаем технические байты отмены за scratchpad. */
+	if (AppSafety_IsResetPending()) {
+		return DS18B20_READ_CANCELLED;
 	}
 
-	int16_t raw_temp = (int16_t) (scratchpad[1] << 8) | scratchpad[0];
-	*out_temp = (float) raw_temp * 0.0625f;
+	if (OneWire_CRC8(scratchpad, 8U) != scratchpad[8]) {
+		return AppSafety_IsResetPending() ?
+				DS18B20_READ_CANCELLED : DS18B20_READ_COMM_ERROR;
+	}
+
+	const int16_t raw_temp = (int16_t) (((uint16_t) scratchpad[1] << 8U)
+			| scratchpad[0]);
+	const float temperature = (float) raw_temp * 0.0625f;
+
+	if (AppSafety_IsResetPending()) {
+		return DS18B20_READ_CANCELLED;
+	}
+
+	*out_temp = temperature;
 
 	return DS18B20_READ_OK;
 }
 
+// --- Доступ к списку обнаруженных датчиков ---
+
+/*
+ * Используется задачей мониторинга, которая также выполняет поиск.
+ * После подготовки reset новые обращения возвращают NULL.
+ *
+ * Ранее выданный указатель этим не отзывается:
+ * вызывающий код обязан учитывать reset перед использованием результата.
+ */
 DS18B20_ROM_t* DS18B20_GetROM(uint8_t sensor_index) {
-	if (sensor_index < ds18b20_sensor_count)
+	if (AppSafety_IsResetPending()) {
+		return NULL;
+	}
+
+	if (sensor_index < ds18b20_sensor_count) {
 		return &ds18b20_rom_codes[sensor_index];
+	}
+
 	return NULL;
 }
-
