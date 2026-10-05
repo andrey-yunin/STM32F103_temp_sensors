@@ -1,6 +1,18 @@
 # STM32F103 Temperature Sensors Executor (DDS-240 Standard)
 
-## Current checkpoint — 2026-10-02
+## Current checkpoint — 2026-10-05
+
+Session finished. Resume from the [Thermo handoff](../DDS-240_readme/DDS-240_eko_system/Thermo/NEXT_SESSION_PROMPT.md).
+T01–T13 are BUILD; hardware acceptance remains open. T13 preserves successful
+samples across errors, applies the agreed 9000 ms age limit and clears a
+channel sample after ROM-map application (D05).
+Next: finish agreeing T14 against HC scheduling before providing manual edits.
+The proposed 3000 ms start-to-start period is not implemented or finally agreed.
+T15/T16 remain open. Last incremental Debug build: text=40052, data=100,
+bss=14264; working-source host model passed. No commit, flashing or bench work
+this session. Firmware changes remain uncommitted. Entries below are history.
+
+## Historical checkpoint — 2026-10-02
 
 Resume from the [Thermo handoff](../DDS-240_readme/DDS-240_eko_system/Thermo/NEXT_SESSION_PROMPT.md).
 T07/T08 are BUILD; hardware acceptance remains open. T09 scope is discussed,

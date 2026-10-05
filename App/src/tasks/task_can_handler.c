@@ -10,7 +10,6 @@
  *   - Event-driven обработку через osThreadFlags (FLAG_CAN_RX, FLAG_CAN_TX)
  */
 
-
 #include "task_can_handler.h"
 #include "main.h"           // Для HAL-функций, CAN_HandleTypeDef, UART_HandleTypeDef
 #include "cmsis_os.h"       // Для osDelay, osMessageQueueXxx
@@ -135,70 +134,62 @@ static bool CAN_IsAcceptedCommand(const CanRxFrame_t *rx_frame) {
 	return true;
 }
 
+// --- Снимок CAN-диагностики ---
+// CAN-модуль копирует счётчики для F007 под запретом IRQ.
+// После копирования восстанавливает исходный PRIMASK,
+// сохраняя запрет, если его ранее установил вызывающий код.
 
+void CAN_Diagnostics_GetSnapshot(CanDiagnostics_t *out) {
+	uint32_t primask;
 
-void CAN_Diagnostics_GetSnapshot(CanDiagnostics_t *out)
-{
 	if (out == NULL) {
 		return;
-		}
+	}
 
-	// Снимок нужен для F007 GET_STATUS.
-	// Копируем атомарно, потому что часть счетчиков позже будет обновляться
-	// из CAN callback/ISR path.
+	primask = __get_PRIMASK();
 	__disable_irq();
-	memcpy(out, (const void *)&g_can_diag, sizeof(CanDiagnostics_t));
-	__enable_irq();
+
+	memcpy(out, (const void*) &g_can_diag, sizeof(CanDiagnostics_t));
+
+	__set_PRIMASK(primask);
 }
 
-void CAN_Diagnostics_RecordRxQueueOverflow(void)
-{
+void CAN_Diagnostics_RecordRxQueueOverflow(void) {
 	g_can_diag.rx_queue_overflow++;
 }
 
-void CAN_Diagnostics_RecordAppQueueOverflow(void)
-{
+void CAN_Diagnostics_RecordAppQueueOverflow(void) {
 	g_can_diag.app_queue_overflow++;
 }
 
-void CAN_Diagnostics_RecordCanError(uint32_t hal_error, uint32_t esr)
-{
+void CAN_Diagnostics_RecordCanError(uint32_t hal_error, uint32_t esr) {
 	g_can_diag.can_error_callback_count++;
-    g_can_diag.last_hal_error = hal_error;
-    g_can_diag.last_esr = esr;
+	g_can_diag.last_hal_error = hal_error;
+	g_can_diag.last_esr = esr;
 
-    if ((esr & CAN_ESR_EWGF) != 0U)
-	{
-	g_can_diag.error_warning_count++;
+	if ((esr & CAN_ESR_EWGF) != 0U) {
+		g_can_diag.error_warning_count++;
 	}
 
-    if ((esr & CAN_ESR_EPVF) != 0U)
-	{
-	g_can_diag.error_passive_count++;
+	if ((esr & CAN_ESR_EPVF) != 0U) {
+		g_can_diag.error_passive_count++;
 	}
 
-    if ((esr & CAN_ESR_BOFF) != 0U)
-	{
-	g_can_diag.bus_off_count++;
+	if ((esr & CAN_ESR_BOFF) != 0U) {
+		g_can_diag.bus_off_count++;
 	}
 }
 
-
-static void CAN_QueueTxFrame(CanTxFrame_t *tx)
-{
+static void CAN_QueueTxFrame(CanTxFrame_t *tx) {
 	// Единая точка постановки исходящих CAN-кадров в очередь.
 	// tx_total здесь не увеличиваем: физическая отправка выполняется ниже
 	// через HAL_CAN_AddTxMessage(), как в образцах Motion/Fluidics.
-	if (osMessageQueuePut(can_tx_queueHandle, tx, 0, 0) == osOK)
-	{
+	if (osMessageQueuePut(can_tx_queueHandle, tx, 0, 0) == osOK) {
 		osThreadFlagsSet(task_can_handleHandle, FLAG_CAN_TX);
-	}
-	else
-	{
+	} else {
 		g_can_diag.tx_queue_overflow++;
 	}
 }
-
 
 // ============================================================
 // Вспомогательные функции (Response Helpers)
@@ -206,47 +197,54 @@ static void CAN_QueueTxFrame(CanTxFrame_t *tx)
 
 void CAN_SendAck(uint16_t cmd_code) {
 	CanTxFrame_t tx;
-    tx.header.ExtId = CAN_BUILD_ID(CAN_PRIORITY_NORMAL, CAN_MSG_TYPE_ACK, CAN_ADDR_CONDUCTOR, AppConfig_GetPerformerID());
-    tx.header.IDE = CAN_ID_EXT;
-    tx.header.RTR = CAN_RTR_DATA;
-    tx.header.DLC = 8; // Unified DLC=8
-    tx.data[0] = (uint8_t)(cmd_code & 0xFF);
-    tx.data[1] = (uint8_t)((cmd_code >> 8) & 0xFF);
-    for(uint8_t i = 2; i < 8; i++) tx.data[i] = 0x00;
+	tx.header.ExtId = CAN_BUILD_ID(CAN_PRIORITY_NORMAL, CAN_MSG_TYPE_ACK,
+			CAN_ADDR_CONDUCTOR, AppConfig_GetPerformerID());
+	tx.header.IDE = CAN_ID_EXT;
+	tx.header.RTR = CAN_RTR_DATA;
+	tx.header.DLC = 8; // Unified DLC=8
+	tx.data[0] = (uint8_t) (cmd_code & 0xFF);
+	tx.data[1] = (uint8_t) ((cmd_code >> 8) & 0xFF);
+	for (uint8_t i = 2; i < 8; i++)
+		tx.data[i] = 0x00;
 
-    CAN_QueueTxFrame(&tx);
+	CAN_QueueTxFrame(&tx);
 
 }
 
 void CAN_SendNack(uint16_t cmd_code, uint16_t error_code) {
 	CanTxFrame_t tx;
-	tx.header.ExtId = CAN_BUILD_ID(CAN_PRIORITY_NORMAL, CAN_MSG_TYPE_NACK, CAN_ADDR_CONDUCTOR, AppConfig_GetPerformerID());
-    tx.header.IDE = CAN_ID_EXT;
-    tx.header.RTR = CAN_RTR_DATA;
-    tx.header.DLC = 8; // Unified DLC=8
-    tx.data[0] = (uint8_t)(cmd_code & 0xFF);
-    tx.data[1] = (uint8_t)((cmd_code >> 8) & 0xFF);
-    tx.data[2] = (uint8_t)(error_code & 0xFF);
-    tx.data[3] = (uint8_t)((error_code >> 8) & 0xFF);
-    for(uint8_t i = 4; i < 8; i++) tx.data[i] = 0x00;
+	tx.header.ExtId = CAN_BUILD_ID(CAN_PRIORITY_NORMAL, CAN_MSG_TYPE_NACK,
+			CAN_ADDR_CONDUCTOR, AppConfig_GetPerformerID());
+	tx.header.IDE = CAN_ID_EXT;
+	tx.header.RTR = CAN_RTR_DATA;
+	tx.header.DLC = 8; // Unified DLC=8
+	tx.data[0] = (uint8_t) (cmd_code & 0xFF);
+	tx.data[1] = (uint8_t) ((cmd_code >> 8) & 0xFF);
+	tx.data[2] = (uint8_t) (error_code & 0xFF);
+	tx.data[3] = (uint8_t) ((error_code >> 8) & 0xFF);
+	for (uint8_t i = 4; i < 8; i++)
+		tx.data[i] = 0x00;
 
-    CAN_QueueTxFrame(&tx);
+	CAN_QueueTxFrame(&tx);
 
 }
 
 void CAN_SendDone(uint16_t cmd_code, uint8_t sensor_id) {
 	CanTxFrame_t tx;
-    tx.header.ExtId = CAN_BUILD_ID(CAN_PRIORITY_NORMAL, CAN_MSG_TYPE_DATA_DONE_LOG, CAN_ADDR_CONDUCTOR, AppConfig_GetPerformerID());
-    tx.header.IDE = CAN_ID_EXT;
-    tx.header.RTR = CAN_RTR_DATA;
-    tx.header.DLC = 8; // Unified DLC=8
-    tx.data[0] = CAN_SUB_TYPE_DONE;
-    tx.data[1] = (uint8_t)(cmd_code & 0xFF);
-    tx.data[2] = (uint8_t)((cmd_code >> 8) & 0xFF);
-    tx.data[3] = sensor_id;
-    for(uint8_t i = 4; i < 8; i++) tx.data[i] = 0x00;
+	tx.header.ExtId = CAN_BUILD_ID(CAN_PRIORITY_NORMAL,
+			CAN_MSG_TYPE_DATA_DONE_LOG, CAN_ADDR_CONDUCTOR,
+			AppConfig_GetPerformerID());
+	tx.header.IDE = CAN_ID_EXT;
+	tx.header.RTR = CAN_RTR_DATA;
+	tx.header.DLC = 8; // Unified DLC=8
+	tx.data[0] = CAN_SUB_TYPE_DONE;
+	tx.data[1] = (uint8_t) (cmd_code & 0xFF);
+	tx.data[2] = (uint8_t) ((cmd_code >> 8) & 0xFF);
+	tx.data[3] = sensor_id;
+	for (uint8_t i = 4; i < 8; i++)
+		tx.data[i] = 0x00;
 
-    CAN_QueueTxFrame(&tx);
+	CAN_QueueTxFrame(&tx);
 
 }
 
@@ -259,41 +257,37 @@ void CAN_SendDone(uint16_t cmd_code, uint8_t sensor_id) {
  * cmd_code не включается в DATA: команду определяет контекст транзакции.
  * Постановка в очередь сама по себе не подтверждает доставку получателю.
  */
-void CAN_SendData(uint16_t cmd_code, uint8_t sequence_info,
-                 const uint8_t *data, uint8_t len)
-{
-    CanTxFrame_t tx_frame;
-    uint8_t copy_len;
+void CAN_SendData(uint16_t cmd_code, uint8_t sequence_info, const uint8_t *data,
+		uint8_t len) {
+	CanTxFrame_t tx_frame;
+	uint8_t copy_len;
 
-    (void)cmd_code;
+	(void) cmd_code;
 
-    memset(&tx_frame, 0, sizeof(tx_frame));
+	memset(&tx_frame, 0, sizeof(tx_frame));
 
-    copy_len = len;
-    if (copy_len > CAN_DATA_PAYLOAD_MAX) {
-        copy_len = CAN_DATA_PAYLOAD_MAX;
-    }
+	copy_len = len;
+	if (copy_len > CAN_DATA_PAYLOAD_MAX) {
+		copy_len = CAN_DATA_PAYLOAD_MAX;
+	}
 
-    tx_frame.header.ExtId = CAN_BUILD_ID(
-            CAN_PRIORITY_NORMAL,
-            CAN_MSG_TYPE_DATA_DONE_LOG,
-            CAN_ADDR_CONDUCTOR,
-            AppConfig_GetPerformerID());
+	tx_frame.header.ExtId = CAN_BUILD_ID(CAN_PRIORITY_NORMAL,
+			CAN_MSG_TYPE_DATA_DONE_LOG, CAN_ADDR_CONDUCTOR,
+			AppConfig_GetPerformerID());
 
-    tx_frame.header.IDE = CAN_ID_EXT;
-    tx_frame.header.RTR = CAN_RTR_DATA;
-    tx_frame.header.DLC = CAN_FRAME_DLC;
+	tx_frame.header.IDE = CAN_ID_EXT;
+	tx_frame.header.RTR = CAN_RTR_DATA;
+	tx_frame.header.DLC = CAN_FRAME_DLC;
 
-    tx_frame.data[0] = CAN_SUB_TYPE_DATA;
-    tx_frame.data[1] = sequence_info;
+	tx_frame.data[0] = CAN_SUB_TYPE_DATA;
+	tx_frame.data[1] = sequence_info;
 
-    if ((data != NULL) && (copy_len > 0U)) {
-        memcpy(&tx_frame.data[2], data, copy_len);
-    }
+	if ((data != NULL) && (copy_len > 0U)) {
+		memcpy(&tx_frame.data[2], data, copy_len);
+	}
 
-    CAN_QueueTxFrame(&tx_frame);
+	CAN_QueueTxFrame(&tx_frame);
 }
-
 
 // ============================================================
 // Основная задача (Main Task Loop)
@@ -302,117 +296,111 @@ void CAN_SendData(uint16_t cmd_code, uint8_t sequence_info,
 void app_start_task_can_handler(void *argument) {
 
 	CanRxFrame_t rx_frame;
-    CanTxFrame_t tx_frame;
-    uint32_t txMailbox;
+	CanTxFrame_t tx_frame;
+	uint32_t txMailbox;
 
-    // --- Два банка: broadcast и текущий адрес из RAM-конфигурации ---
-    /* Фильтры устанавливаются до запуска CAN и разрешения RX notifications. */
-    CAN_ConfigureFilterBank(0U, CAN_ADDR_BROADCAST);
-    CAN_ConfigureFilterBank(1U, (uint8_t)AppConfig_GetPerformerID());
+	// --- Два банка: broadcast и текущий адрес из RAM-конфигурации ---
+	/* Фильтры устанавливаются до запуска CAN и разрешения RX notifications. */
+	CAN_ConfigureFilterBank(0U, CAN_ADDR_BROADCAST);
+	CAN_ConfigureFilterBank(1U, (uint8_t) AppConfig_GetPerformerID());
 
-    if (HAL_CAN_Start(&hcan) != HAL_OK) Error_Handler();
-    if (HAL_CAN_ActivateNotification(&hcan,
-		CAN_IT_RX_FIFO0_MSG_PENDING |
-			CAN_IT_RX_FIFO0_FULL |
-			CAN_IT_RX_FIFO0_OVERRUN |
-			CAN_IT_ERROR_WARNING |
-			CAN_IT_ERROR_PASSIVE |
-			CAN_IT_BUSOFF |
-			CAN_IT_LAST_ERROR_CODE |
-			CAN_IT_ERROR) != HAL_OK) Error_Handler();
+	if (HAL_CAN_Start(&hcan) != HAL_OK)
+		Error_Handler();
+	if (HAL_CAN_ActivateNotification(&hcan,
+	CAN_IT_RX_FIFO0_MSG_PENDING |
+	CAN_IT_RX_FIFO0_FULL |
+	CAN_IT_RX_FIFO0_OVERRUN |
+	CAN_IT_ERROR_WARNING |
+	CAN_IT_ERROR_PASSIVE |
+	CAN_IT_BUSOFF |
+	CAN_IT_LAST_ERROR_CODE |
+	CAN_IT_ERROR) != HAL_OK)
+		Error_Handler();
 
-    for (;;)
-    {
-	 /*
-	  * CAN task дошла до штатной точки ожидания RX/TX событий.
-	  * Это общий pattern Motion/Fluidics.
-	  */
+	// --- Интервал ожидания CAN-событий ---
+	// CMSIS принимает время ожидания в тиках RTOS.
+	// При текущей частоте 1000 Гц интервал 500 мс равен 500 тикам.
+	const uint32_t idle_wait_ticks = (APP_WATCHDOG_TASK_IDLE_TIMEOUT_MS
+			* osKernelGetTickFreq()) / 1000U;
 
-	 AppWatchdog_Heartbeat(APP_WDG_CLIENT_CAN);
+	for (;;) {
+		// --- Ожидание события или штатного таймаута ---
+		// CAN-задача подтверждает прогресс только после штатного
+		// возврата из ожидания. Ошибка API heartbeat не формирует.
+		uint32_t flags = osThreadFlagsWait(
+		FLAG_CAN_RX | FLAG_CAN_TX,
+		osFlagsWaitAny, idle_wait_ticks);
 
-	// Ожидаем прерывание (RX) или запрос на отправку (TX)
-        uint32_t flags = osThreadFlagsWait(FLAG_CAN_RX | FLAG_CAN_TX, osFlagsWaitAny,
-		                           APP_WATCHDOG_TASK_IDLE_TIMEOUT_MS);
+		// Отсутствие трафика допустимо: задача работает и завершила ожидание.
+		if (flags == osFlagsErrorTimeout) {
+			AppWatchdog_Heartbeat(APP_WDG_CLIENT_CAN);
+			continue;
+		}
 
-        /*
-         * Задача проснулась по событию или timeout.
-         * Даже если команд нет, watchdog видит, что CAN task не зависла.
-         */
-         AppWatchdog_Heartbeat(APP_WDG_CLIENT_CAN);
+		// Прочие ошибки не подтверждают штатный прогресс задачи.
+		if ((flags & osFlagsError) != 0U) {
+			continue;
+		}
 
-         if ((flags & osFlagsError) != 0U) {
-	 continue;
-	 }
+		// --- Подтверждение обработки события ---
+		// Если последующая обработка RX/TX зависнет, новых отметок не будет.
+		AppWatchdog_Heartbeat(APP_WDG_CLIENT_CAN);
 
-         // --- Обработка приема (RX) ---
-         if (flags & FLAG_CAN_RX) {
-	 while (osMessageQueueGet(can_rx_queueHandle, &rx_frame, NULL, 0) == osOK) {
-		 // До чтения payload применяем общий программный профиль HC.
-		 if (!CAN_IsAcceptedCommand(&rx_frame)) {
-			 continue;
-		 }
+		// --- Обработка приема (RX) ---
+		if (flags & FLAG_CAN_RX) {
+			while (osMessageQueueGet(can_rx_queueHandle, &rx_frame, NULL, 0)
+					== osOK) {
+				// До чтения payload применяем общий программный профиль HC.
+				if (!CAN_IsAcceptedCommand(&rx_frame)) {
+					continue;
+				}
 
-		 ParsedCanCommand_t parsed;
-		 memset(&parsed, 0, sizeof(parsed));
+				ParsedCanCommand_t parsed;
+				memset(&parsed, 0, sizeof(parsed));
 
-		 parsed.cmd_code = (uint16_t)rx_frame.data[0] |
-				 ((uint16_t)rx_frame.data[1] << 8);
+				parsed.cmd_code = (uint16_t) rx_frame.data[0]
+						| ((uint16_t) rx_frame.data[1] << 8);
 
-		 parsed.sensor_id = rx_frame.data[2];
-		 parsed.data_len = 5U;
+				parsed.sensor_id = rx_frame.data[2];
+				parsed.data_len = 5U;
 
-		 for (uint8_t i = 0U; i < parsed.data_len; i++)
-			 {
-			 parsed.data[i] = rx_frame.data[3U + i];
-			 }
+				for (uint8_t i = 0U; i < parsed.data_len; i++) {
+					parsed.data[i] = rx_frame.data[3U + i];
+				}
 
-		 if (osMessageQueuePut(parser_queueHandle, &parsed, 0, 0) == osOK)
-			 {
-			 g_can_diag.rx_total++;
-			 }
-		 else
-			 {
-			 g_can_diag.dispatcher_queue_overflow++;
-			 }
-		 }
-	 }
+				if (osMessageQueuePut(parser_queueHandle, &parsed, 0, 0)
+						== osOK) {
+					g_can_diag.rx_total++;
+				} else {
+					g_can_diag.dispatcher_queue_overflow++;
+				}
+			}
+		}
 
-         // --- Обработка передачи (TX) ---
-         if (flags & FLAG_CAN_TX)
-	 {
-	 while (osMessageQueueGet(can_tx_queueHandle, &tx_frame, NULL, 0) == osOK)
-		 {
-		 uint32_t tick_start = HAL_GetTick();
-		 while ((HAL_CAN_GetTxMailboxesFreeLevel(&hcan) == 0U) &&
-				 ((HAL_GetTick() - tick_start) < 10U))
-			 {
-			 osDelay(1);
-			 }
+		// --- Обработка передачи (TX) ---
+		if (flags & FLAG_CAN_TX) {
+			while (osMessageQueueGet(can_tx_queueHandle, &tx_frame, NULL, 0)
+					== osOK) {
+				uint32_t tick_start = HAL_GetTick();
+				while ((HAL_CAN_GetTxMailboxesFreeLevel(&hcan) == 0U)
+						&& ((HAL_GetTick() - tick_start) < 10U)) {
+					osDelay(1);
+				}
 
-		 if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan) > 0U)
-			 {
-			 if (HAL_CAN_AddTxMessage(&hcan,
-					 &tx_frame.header,
-							 tx_frame.data,
-							 &txMailbox) == HAL_OK)
-				 {
-				 g_can_diag.tx_total++;
-				 }
-			 else
-				 {
-				 g_can_diag.tx_hal_error++;
-				 g_can_diag.last_hal_error = HAL_CAN_GetError(&hcan);
-				 g_can_diag.last_esr = hcan.Instance->ESR;
-				 }
-			 }
-		 else
-			 {
-			 g_can_diag.tx_mailbox_timeout++;
-			 }
-		 }
-	 }
-         }
+				if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan) > 0U) {
+					if (HAL_CAN_AddTxMessage(&hcan, &tx_frame.header,
+							tx_frame.data, &txMailbox) == HAL_OK) {
+						g_can_diag.tx_total++;
+					} else {
+						g_can_diag.tx_hal_error++;
+						g_can_diag.last_hal_error = HAL_CAN_GetError(&hcan);
+						g_can_diag.last_esr = hcan.Instance->ESR;
+					}
+				} else {
+					g_can_diag.tx_mailbox_timeout++;
+				}
+			}
+		}
+	}
 }
-
-
 

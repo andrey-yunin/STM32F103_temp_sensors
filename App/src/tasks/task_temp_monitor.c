@@ -23,8 +23,27 @@
 #define TEMP_MONITOR_NO_PENDING_SENSOR     0xFFU
 
 // --- Инкапсулированные данные (скрыты внутри модуля) ---
-static float s_latest_temperatures[DS18B20_MAX_SENSORS];
-static uint16_t s_latest_sample_errors[DS18B20_MAX_SENSORS];
+// --- Последний успешный результат каждого канала ---
+// Модель HC адаптирована к восьми независимым каналам Thermo.
+// Время относится к началу преобразования; ошибка попытки хранится отдельно.
+#define TEMP_MONITOR_MAX_AGE_MS 9000U
+
+typedef enum {
+	TEMP_SAMPLE_EMPTY = 0,
+	TEMP_SAMPLE_VALID,
+	TEMP_SAMPLE_STALE,
+	TEMP_SAMPLE_ERROR
+} TempSampleStatus_t;
+
+typedef struct {
+	float temperature;
+	uint32_t sample_started_ms;
+	TempSampleStatus_t status;
+	uint16_t last_error;
+} TempSample_t;
+
+static TempSample_t s_samples[DS18B20_MAX_SENSORS];
+
 static uint8_t s_rom_id_buffer[8];
 static uint8_t s_rom_map_pending_sensor_id = TEMP_MONITOR_NO_PENDING_SENSOR;
 static bool s_rom_map_pending = false;
@@ -117,38 +136,109 @@ static uint16_t TempMonitor_SelectAggregateSampleError(uint16_t current_error,
 
 // --- Сохранение результата измерения ---
 
-/*
- * Задача мониторинга обновляет значение и его ошибку вместе.
- * Mutex защищает данные от конкурентного чтения.
- * Отмену измерения обрабатывает вызывающий код.
- */
-static void TempMonitor_SetSample(uint8_t index, float value,
-		uint16_t sample_error) {
+// --- Публикация успешного измерения ---
+// Владелец записи — задача мониторинга. Mutex защищает весь результат.
+// Ошибку предыдущей попытки снимаем, возраст считаем от запуска conversion.
+static void TempMonitor_SetTemperature(uint8_t index, float value,
+		uint32_t sample_started_ms) {
 	if (index >= DS18B20_MAX_SENSORS || tempMutex == NULL) {
 		return;
 	}
-
 	if (osMutexAcquire(tempMutex, osWaitForever) != osOK) {
 		return;
 	}
 
-	s_latest_temperatures[index] = value;
-	s_latest_sample_errors[index] = sample_error;
+	s_samples[index].temperature = value;
+	s_samples[index].sample_started_ms = sample_started_ms;
+	s_samples[index].status =
+			((uint32_t) (HAL_GetTick() - sample_started_ms)
+					>= TEMP_MONITOR_MAX_AGE_MS) ?
+					TEMP_SAMPLE_STALE : TEMP_SAMPLE_VALID;
+	s_samples[index].last_error = CAN_ERR_NONE;
 
 	if (osMutexRelease(tempMutex) != osOK) {
 		Error_Handler();
 	}
 }
 
-static void TempMonitor_GetSample(uint8_t index, float *out_value,
+// --- Ошибка обновления по модели HC ---
+// Сохраняем успешную температуру и её исходное время.
+// До первого успешного результата фиксируем состояние ERROR.
+static void TempMonitor_SetSampleError(uint8_t index, uint16_t sample_error) {
+	if (index >= DS18B20_MAX_SENSORS || tempMutex == NULL) {
+		return;
+	}
+	if (osMutexAcquire(tempMutex, osWaitForever) != osOK) {
+		return;
+	}
+
+	s_samples[index].last_error = TempMonitor_NormalizeSampleError(
+			sample_error);
+	if (s_samples[index].status == TEMP_SAMPLE_EMPTY) {
+		s_samples[index].status = TEMP_SAMPLE_ERROR;
+	}
+
+	if (osMutexRelease(tempMutex) != osOK) {
+		Error_Handler();
+	}
+}
+
+// --- Ошибка общего преобразования ---
+// Попытка не дала новых данных для всех каналов; прежние значения сохраняются.
+static void TempMonitor_RecordAllSampleErrors(uint16_t sample_error) {
+	for (uint8_t i = 0; i < DS18B20_MAX_SENSORS; i++) {
+		TempMonitor_SetSampleError(i, sample_error);
+	}
+}
+
+// --- Очистка записи при смене привязки ---
+// Старый результат не должен перейти к новому датчику.
+// При отказе очистки нельзя продолжать работу с изменённой ROM-map.
+static void TempMonitor_ClearSample(uint8_t index) {
+	if (index >= DS18B20_MAX_SENSORS || tempMutex == NULL) {
+		Error_Handler();
+		return;
+	}
+	if (osMutexAcquire(tempMutex, osWaitForever) != osOK) {
+		Error_Handler();
+		return;
+	}
+
+	s_samples[index] = (TempSample_t ) { 0 };
+
+	if (osMutexRelease(tempMutex) != osOK) {
+		Error_Handler();
+	}
+}
+
+// --- Чтение пригодного результата ---
+// Как в HC, свежая успешная запись доступна даже после ошибки обновления.
+// STALE сохраняется до нового измерения; ошибка не обновляет timestamp.
+// -999 остаётся только значением отсутствия данных для публичного float API.
+static bool TempMonitor_GetSample(uint8_t index, float *out_value,
 		uint16_t *out_error) {
+	bool valid = false;
 	float value = -999.0f;
 	uint16_t sample_error = CAN_ERR_SENSOR_FAILURE;
 
 	if (index < DS18B20_MAX_SENSORS && tempMutex != NULL) {
 		if (osMutexAcquire(tempMutex, 10) == osOK) {
-			value = s_latest_temperatures[index];
-			sample_error = s_latest_sample_errors[index];
+			TempSample_t *sample = &s_samples[index];
+
+			if (sample->status
+					== TEMP_SAMPLE_VALID&& (uint32_t)(HAL_GetTick() - sample->sample_started_ms)
+					>= TEMP_MONITOR_MAX_AGE_MS) {
+				sample->status = TEMP_SAMPLE_STALE;
+			}
+
+			valid = (sample->status == TEMP_SAMPLE_VALID);
+			if (valid) {
+				value = sample->temperature;
+				sample_error = CAN_ERR_NONE;
+			} else {
+				sample_error = TempMonitor_NormalizeSampleError(
+						sample->last_error);
+			}
 			osMutexRelease(tempMutex);
 		}
 	}
@@ -156,25 +246,10 @@ static void TempMonitor_GetSample(uint8_t index, float *out_value,
 	if (out_value != NULL) {
 		*out_value = value;
 	}
-
 	if (out_error != NULL) {
-		*out_error = TempMonitor_NormalizeSampleError(sample_error);
+		*out_error = sample_error;
 	}
-}
-
-static void TempMonitor_SetTemperature(uint8_t index, float value) {
-	TempMonitor_SetSample(index, value, CAN_ERR_NONE);
-}
-
-static void TempMonitor_SetSampleError(uint8_t index, uint16_t sample_error) {
-	TempMonitor_SetSample(index, -999.0f,
-			TempMonitor_NormalizeSampleError(sample_error));
-}
-
-static void TempMonitor_InvalidateAllTemperatures(uint16_t sample_error) {
-	for (uint8_t i = 0; i < DS18B20_MAX_SENSORS; i++) {
-		TempMonitor_SetSampleError(i, sample_error);
-	}
+	return valid;
 }
 
 // --- Ожидание готовности датчиков с учётом отмены ---
@@ -242,9 +317,9 @@ static void TempMonitor_SendTemperature(uint16_t cmd_code, uint8_t sensor_id) {
 	float raw_t = -999.0f;
 	uint16_t sample_error = CAN_ERR_SENSOR_FAILURE;
 
-	TempMonitor_GetSample(sensor_id, &raw_t, &sample_error);
+	bool valid = TempMonitor_GetSample(sensor_id, &raw_t, &sample_error);
 
-	if (raw_t > -100.0f) {
+	if (valid) {
 		// Формат температуры: int16, десятые доли градуса Celsius, little-endian.
 		int16_t tx_val = (int16_t) (raw_t * 10.0f);
 		uint8_t data[2];
@@ -279,9 +354,9 @@ static void TempMonitor_SendAllTemperatures(uint16_t cmd_code) {
 		float t = -999.0f;
 		uint16_t sample_error = CAN_ERR_SENSOR_FAILURE;
 
-		TempMonitor_GetSample(i, &t, &sample_error);
+		bool valid = TempMonitor_GetSample(i, &t, &sample_error);
 
-		if (t > -100.0f) {
+		if (valid) {
 			int16_t tx_v = (int16_t) (t * 10.0f);
 			uint8_t data[3];
 
@@ -487,8 +562,12 @@ static void TempMonitor_ProcessCommand(const ThermoCommand_t *cmd) {
 			break;
 		}
 
+		// После применения карты прежнее измерение канала больше не пригодно.
+		TempMonitor_ClearSample(cmd->sensor_id);
+
 		CAN_SendDone(cmd->cmd_code, cmd->sensor_id);
 		break;
+
 	}
 
 	default:
@@ -575,11 +654,8 @@ void app_start_task_temp_monitor(void *argument) {
 		return;
 	}
 
-	// 2. Инициализация массива начальными значениями "Ошибки"
-	for (uint8_t i = 0; i < DS18B20_MAX_SENSORS; i++) {
-		s_latest_temperatures[i] = -999.0f;
-		s_latest_sample_errors[i] = CAN_ERR_SENSOR_FAILURE;
-	}
+	// 2. До первого успешного измерения все записи имеют состояние EMPTY.
+	memset(s_samples, 0, sizeof(s_samples));
 
 	// Буферы для работы в цикле
 	DS18B20_ROM_t target_rom;
@@ -596,7 +672,7 @@ void app_start_task_temp_monitor(void *argument) {
 		if (AppSafety_IsResetPending()) {
 			TempMonitor_ClearPendingMap();
 			TempMonitor_ProcessPendingCommands(
-					APP_WATCHDOG_TASK_IDLE_TIMEOUT_MS);
+			APP_WATCHDOG_TASK_IDLE_TIMEOUT_MS);
 			continue;
 		}
 
@@ -606,6 +682,7 @@ void app_start_task_temp_monitor(void *argument) {
 		AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
 
 		// 3. Широковещательный запуск conversion на всех датчиках.
+		uint32_t sample_started_ms = HAL_GetTick();
 		bool conversion_started = DS18B20_StartAll();
 		bool conversion_ready = false;
 
@@ -629,7 +706,8 @@ void app_start_task_temp_monitor(void *argument) {
 			CAN_ERR_THERMO_CONVERSION_TIMEOUT :
 															CAN_ERR_THERMO_COMM;
 
-			TempMonitor_InvalidateAllTemperatures(sample_error);
+			TempMonitor_RecordAllSampleErrors(sample_error);
+
 			DS18B20_BusRelease();
 
 			AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
@@ -661,14 +739,15 @@ void app_start_task_temp_monitor(void *argument) {
 				}
 
 				if (read_result == DS18B20_READ_OK) {
-					TempMonitor_SetTemperature(i, current_temp);
+					TempMonitor_SetTemperature(i, current_temp,
+							sample_started_ms);
 				} else {
 					// Ошибка чтения DS18B20: no presence / read failure / CRC mismatch.
 					TempMonitor_SetSampleError(i, CAN_ERR_THERMO_COMM);
 				}
 			} else {
 				// Канал не настроен (пусто во Flash)
-				TempMonitor_SetSampleError(i, CAN_ERR_SENSOR_FAILURE);
+				TempMonitor_ClearSample(i);
 			}
 
 			AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
