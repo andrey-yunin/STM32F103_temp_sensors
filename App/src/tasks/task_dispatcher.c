@@ -102,6 +102,37 @@ void app_start_task_dispatcher(void *argument) {
 		// --- 2. Диспетчеризация по коду команды ---
 		switch (parsed.cmd_code) {
 
+#if APP_WATCHDOG_TEST_HOOKS
+		case APP_WDG_TEST_INFO_COMMAND: {
+			uint32_t csr = app_watchdog_test_reset_csr;
+			uint8_t data[6] = { 1U, APP_WATCHDOG_TEST_HOOKS,
+				(uint8_t) csr, (uint8_t) (csr >> 8U),
+				(uint8_t) (csr >> 16U), (uint8_t) (csr >> 24U) };
+			CAN_SendData(parsed.cmd_code, CAN_DATA_SEQ_EOT_MASK, data, sizeof(data));
+			CAN_SendDone(parsed.cmd_code, 0U);
+			break;
+		}
+		case APP_WDG_TEST_FAULT_COMMAND: {
+			if (parsed.data_len < 2U
+					|| ((uint16_t) parsed.data[0]
+						| ((uint16_t) parsed.data[1] << 8U)) != APP_WDG_TEST_KEY) {
+				CAN_SendNack(parsed.cmd_code, CAN_ERR_INVALID_KEY);
+				break;
+			}
+			if (parsed.sensor_id < 1U || parsed.sensor_id > 4U) {
+				CAN_SendNack(parsed.cmd_code, CAN_ERR_INVALID_PARAM);
+				break;
+			}
+			/* Allow the queued ACK to leave before stopping CAN.
+			 * This window is not a delivery guarantee. No DONE for faults. */
+			if (osDelay(100U) != osOK) {
+				Error_Handler();
+			}
+			AppWatchdog_TestArm(parsed.sensor_id);
+			break;
+		}
+#endif
+
 		case CAN_CMD_SENSOR_GET_TEMP: {
 			if (parsed.sensor_id >= DS18B20_MAX_SENSORS) {
 				CAN_SendNack(parsed.cmd_code, CAN_ERR_INVALID_SENSOR_ID);

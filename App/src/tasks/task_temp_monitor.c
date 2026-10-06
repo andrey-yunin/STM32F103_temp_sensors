@@ -19,7 +19,7 @@
 
 #define TEMP_MONITOR_CONVERSION_TIMEOUT_MS 800U
 #define TEMP_MONITOR_CONVERSION_POLL_MS    10U
-#define TEMP_MONITOR_IDLE_DELAY_MS         2000U
+#define TEMP_MONITOR_SAMPLE_PERIOD_MS      3000U
 #define TEMP_MONITOR_NO_PENDING_SENSOR     0xFFU
 
 // --- Инкапсулированные данные (скрыты внутри модуля) ---
@@ -254,53 +254,186 @@ static bool TempMonitor_GetSample(uint8_t index, float *out_value,
 
 // --- Ожидание готовности датчиков с учётом отмены ---
 
+// --- Состояние фонового измерения ---
 /*
- * Задача мониторинга опрашивает завершение conversion.
- * При reset прекращает ожидание без дальнейшего опроса шины.
- * Текущее RTOS-ожидание завершается штатно.
- *
- * false означает отсутствие подтверждённой готовности.
- * Вызывающий код обязан отличать отмену от timeout по reset_pending.
- * Существующий способ отсчёта времени здесь сохраняется.
+ * Контекст принадлежит задаче мониторинга. START выполняется при переходе
+ * IDLE -> WAIT; READ обрабатывает один канал за вызов. Размер кеша и карты
+ * остаётся равным возможностям универсальной платы: восемь каналов.
  */
-static bool TempMonitor_WaitConversionComplete(uint32_t timeout_ms) {
-	uint32_t elapsed_ms = 0U;
+typedef enum {
+	TEMP_CYCLE_IDLE = 0, TEMP_CYCLE_WAIT, TEMP_CYCLE_READ
+} TempCycleState_t;
 
-	while (elapsed_ms < timeout_ms) {
-		if (AppSafety_IsResetPending()) {
-			return false;
-		}
+typedef struct {
+	TempCycleState_t state;
+	bool attempted;
+	uint32_t started_ms;
+	uint32_t polled_ms;
+	uint8_t read_index;
+} TempCycle_t;
 
-		if (DS18B20_IsConversionComplete()) {
-			return !AppSafety_IsResetPending();
-		}
-
-		if (AppSafety_IsResetPending()) {
-			return false;
-		}
-
-		uint32_t wait_ms = TEMP_MONITOR_CONVERSION_POLL_MS;
-		uint32_t remaining_ms = timeout_ms - elapsed_ms;
-
-		if (remaining_ms < wait_ms) {
-			wait_ms = remaining_ms;
-		}
-
-		AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
-
-		if (osDelay(wait_ms) != osOK) {
-			Error_Handler();
-			return false;
-		}
-
-		elapsed_ms += wait_ms;
-	}
-
+// --- Один шаг измерительного тракта ---
+/*
+ * Между вызовами обслуживается одна команда.
+ * Во время WAIT другой обмен 1-Wire запрещён; во время READ ROM-map
+ * неизменна. Отложенная сервисная команда запрещает начало нового цикла.
+ * Отмена при reset не регистрируется как ошибка измерения.
+ */
+static void TempMonitor_ServiceMeasurement(TempCycle_t *cycle,
+bool allow_start) {
 	if (AppSafety_IsResetPending()) {
-		return false;
+		cycle->state = TEMP_CYCLE_IDLE;
+		TempMonitor_ClearPendingMap();
+		return;
 	}
 
-	return DS18B20_IsConversionComplete();
+	uint32_t now_ms = HAL_GetTick();
+
+	switch (cycle->state) {
+	case TEMP_CYCLE_IDLE: {
+		if (!allow_start
+				|| (cycle->attempted
+						&& (uint32_t) (now_ms - cycle->started_ms)
+								< TEMP_MONITOR_SAMPLE_PERIOD_MS)) {
+			return;
+		}
+
+		cycle->attempted = true;
+		cycle->started_ms = now_ms;
+
+		bool started = DS18B20_StartAll();
+
+		if (AppSafety_IsResetPending()) {
+			return;
+		}
+
+		if (!started) {
+			TempMonitor_RecordAllSampleErrors(CAN_ERR_THERMO_COMM);
+			DS18B20_BusRelease();
+			return;
+		}
+
+		cycle->polled_ms = HAL_GetTick();
+		cycle->state = TEMP_CYCLE_WAIT;
+		return;
+	}
+
+	case TEMP_CYCLE_WAIT: {
+		uint32_t elapsed_ms = now_ms - cycle->started_ms;
+
+		if ((uint32_t) (now_ms - cycle->polled_ms)
+				< TEMP_MONITOR_CONVERSION_POLL_MS
+				&& elapsed_ms < TEMP_MONITOR_CONVERSION_TIMEOUT_MS) {
+			return;
+		}
+
+		cycle->polled_ms = now_ms;
+
+		bool ready = DS18B20_IsConversionComplete();
+
+		if (AppSafety_IsResetPending()) {
+			cycle->state = TEMP_CYCLE_IDLE;
+			return;
+		}
+
+		if (ready) {
+			cycle->read_index = 0U;
+			cycle->state = TEMP_CYCLE_READ;
+		} else if ((uint32_t) (HAL_GetTick() - cycle->started_ms)
+				>= TEMP_MONITOR_CONVERSION_TIMEOUT_MS) {
+			TempMonitor_RecordAllSampleErrors(
+			CAN_ERR_THERMO_CONVERSION_TIMEOUT);
+			DS18B20_BusRelease();
+			cycle->state = TEMP_CYCLE_IDLE;
+		}
+
+		return;
+	}
+
+	case TEMP_CYCLE_READ: {
+		DS18B20_ROM_t rom;
+		float temperature = 0.0f;
+		uint8_t index = cycle->read_index;
+
+		AppConfig_GetSensorROM(index, &rom);
+
+		if (AppSafety_IsResetPending()) {
+			cycle->state = TEMP_CYCLE_IDLE;
+			return;
+		}
+
+		if (DS18B20_IsValidROM(&rom)) {
+			DS18B20_ReadResult_t result = DS18B20_ReadTemperature(&rom,
+					&temperature);
+
+			if (result == DS18B20_READ_CANCELLED
+					|| AppSafety_IsResetPending()) {
+				cycle->state = TEMP_CYCLE_IDLE;
+				return;
+			}
+
+			if (result == DS18B20_READ_OK) {
+				TempMonitor_SetTemperature(index, temperature,
+						cycle->started_ms);
+			} else {
+				TempMonitor_SetSampleError(index, CAN_ERR_THERMO_COMM);
+			}
+		} else {
+			TempMonitor_ClearSample(index);
+		}
+
+		cycle->read_index++;
+
+		if (cycle->read_index >= DS18B20_MAX_SENSORS) {
+			cycle->state = TEMP_CYCLE_IDLE;
+		}
+
+		return;
+	}
+	}
+}
+
+// --- Ожидание до следующего шага ---
+/*
+ * WAIT просыпается к проверке готовности или timeout, READ не ждёт.
+ * IDLE сохраняет период ограничивает ожидание окном watchdog.
+ */
+static uint32_t TempMonitor_GetWaitMs(const TempCycle_t *cycle) {
+	if (AppSafety_IsResetPending()) {
+		return APP_WATCHDOG_TASK_IDLE_TIMEOUT_MS;
+	}
+
+	uint32_t now_ms = HAL_GetTick();
+	uint32_t elapsed_ms = now_ms - cycle->started_ms;
+
+	if (cycle->state == TEMP_CYCLE_READ) {
+		return 0U;
+	}
+
+	if (cycle->state == TEMP_CYCLE_WAIT) {
+		uint32_t poll_elapsed_ms = now_ms - cycle->polled_ms;
+
+		if (elapsed_ms >= TEMP_MONITOR_CONVERSION_TIMEOUT_MS
+				|| poll_elapsed_ms >= TEMP_MONITOR_CONVERSION_POLL_MS) {
+			return 0U;
+		}
+
+		uint32_t wait_ms =
+		TEMP_MONITOR_CONVERSION_POLL_MS - poll_elapsed_ms;
+		uint32_t remaining_ms =
+		TEMP_MONITOR_CONVERSION_TIMEOUT_MS - elapsed_ms;
+
+		return wait_ms < remaining_ms ? wait_ms : remaining_ms;
+	}
+
+	if (!cycle->attempted || elapsed_ms >= TEMP_MONITOR_SAMPLE_PERIOD_MS) {
+		return 0U;
+	}
+
+	uint32_t wait_ms = TEMP_MONITOR_SAMPLE_PERIOD_MS - elapsed_ms;
+
+	return wait_ms < APP_WATCHDOG_TASK_IDLE_TIMEOUT_MS ?
+			wait_ms : APP_WATCHDOG_TASK_IDLE_TIMEOUT_MS;
 }
 
 static void TempMonitor_SendTemperature(uint16_t cmd_code, uint8_t sensor_id) {
@@ -577,52 +710,22 @@ static void TempMonitor_ProcessCommand(const ThermoCommand_t *cmd) {
 	}
 }
 
-static bool TempMonitor_ProcessPendingCommands(uint32_t timeout_ms) {
-	ThermoCommand_t cmd;
-	bool processed = false;
+// --- Ожидание следующей попытки измерения ---
 
-	if (osMessageQueueGet(thermo_queueHandle, &cmd, NULL, timeout_ms) == osOK) {
-		processed = true;
-		TempMonitor_ProcessCommand(&cmd);
-
-		/*
-		 * После пробуждения очищаем очередь без ожидания, чтобы серия команд
-		 * не застревала за очередным циклом измерения.
-		 */
-		while (osMessageQueueGet(thermo_queueHandle, &cmd, NULL, 0) == osOK) {
-			processed = true;
-			TempMonitor_ProcessCommand(&cmd);
-		}
-	}
-
-	return processed;
+// --- Сервисные команды между измерительными циклами ---
+/*
+ * Scan использует общую шину, F103/F105 меняют привязку. Сохраняем FIFO:
+ * одна такая команда ждёт локально, следующие остаются в штатной очереди.
+ * GET за отложенной сервисной командой тоже ждёт; отдельной очереди нет.
+ */
+static bool TempMonitor_CommandNeedsIdle(uint16_t cmd_code) {
+	return cmd_code == CAN_CMD_SRV_SCAN_1WIRE
+			|| cmd_code == CAN_CMD_SRV_SET_CHANNEL_MAP
+			|| cmd_code == CAN_CMD_SRV_SET_CH_MAP_P2;
 }
 
-static void TempMonitor_ProcessPendingCommandsWithHeartbeat(
-		uint32_t total_timeout_ms) {
-	uint32_t elapsed_ms = 0U;
-
-	while (elapsed_ms < total_timeout_ms) {
-		uint32_t wait_ms = APP_WATCHDOG_TASK_IDLE_TIMEOUT_MS;
-		uint32_t remaining_ms = total_timeout_ms - elapsed_ms;
-
-		if (remaining_ms < wait_ms) {
-			wait_ms = remaining_ms;
-		}
-		AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
-
-		/*
-		 * Если команда пришла, сохраняем старое поведение:
-		 * обрабатываем ее и сразу выходим в новый цикл измерения.
-		 */
-		if (TempMonitor_ProcessPendingCommands(wait_ms)) {
-			AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
-			return;
-		}
-
-		AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
-		elapsed_ms += wait_ms;
-	}
+static uint32_t TempMonitor_MsToTicks(uint32_t timeout_ms) {
+	return (timeout_ms * osKernelGetTickFreq() + 999U) / 1000U;
 }
 
 // --- Публичный API доступа к данным ---
@@ -636,132 +739,58 @@ float TempMonitor_GetTemperature(uint8_t index) {
 	return val;
 }
 
-/**
- *
- * @brief Задача мониторинга температуры.
- * Реализует промышленный цикл: Broadcast Start -> RTOS Wait -> Match ROM Read.
- */
 void app_start_task_temp_monitor(void *argument) {
-	// 1. Инициализация мьютекса защиты данных
+	(void) argument;
+
 	tempMutex = osMutexNew(&tempMutex_attr);
 
-	/*
-	 * Mutex защищает согласованное чтение значения и ошибки измерения.
-	 * При отказе создания мониторинг не запускается.
-	 */
 	if (tempMutex == NULL) {
 		Error_Handler();
 		return;
 	}
 
-	// 2. До первого успешного измерения все записи имеют состояние EMPTY.
 	memset(s_samples, 0, sizeof(s_samples));
 
-	// Буферы для работы в цикле
-	DS18B20_ROM_t target_rom;
-	float current_temp = 0.0f;
+	TempCycle_t cycle = { 0 };
+	ThermoCommand_t deferred_command;
+	bool deferred = false;
 
 	for (;;) {
 		AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
 
-		/*
-		 * Подготовка reset прекращает измерения, но не работу RTOS-задачи.
-		 * Как в HC, очередь обслуживается с отказом DEVICE_BUSY.
-		 * Штатное ожидание сохраняет CPU для CAN и dispatcher.
-		 */
-		if (AppSafety_IsResetPending()) {
-			TempMonitor_ClearPendingMap();
-			TempMonitor_ProcessPendingCommands(
-			APP_WATCHDOG_TASK_IDLE_TIMEOUT_MS);
-			continue;
-		}
+		TempMonitor_ServiceMeasurement(&cycle, !deferred);
 
-		// Сначала обслуживаем команды, которые уже пришли от Dispatcher.
-		TempMonitor_ProcessPendingCommands(0);
-
-		AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
-
-		// 3. Широковещательный запуск conversion на всех датчиках.
-		uint32_t sample_started_ms = HAL_GetTick();
-		bool conversion_started = DS18B20_StartAll();
-		bool conversion_ready = false;
-
-		if (conversion_started) {
-			conversion_ready = TempMonitor_WaitConversionComplete(
-			TEMP_MONITOR_CONVERSION_TIMEOUT_MS);
-		}
-
-		/* Отменённая операция не регистрируется как COMM или timeout. */
-		if (AppSafety_IsResetPending()) {
-			continue;
-		}
-
-		if (!conversion_ready) {
-			/*
-			 * Timeout фиксируем только если CONVERT T был реально отправлен.
-			 * Если не было presence pulse при старте, это bus/presence failure,
-			 * а не conversion timeout; это low-level COMM.
-			 */
-			uint16_t sample_error = conversion_started ?
-			CAN_ERR_THERMO_CONVERSION_TIMEOUT :
-															CAN_ERR_THERMO_COMM;
-
-			TempMonitor_RecordAllSampleErrors(sample_error);
-
-			DS18B20_BusRelease();
-
-			AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
-			TempMonitor_ProcessPendingCommandsWithHeartbeat(
-			TEMP_MONITOR_IDLE_DELAY_MS);
-			AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
-			continue;
-		}
-
-		AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
-
-		// 4. ОПРОС ПО ТАБЛИЦЕ МАППИНГА (из Flash)
-		for (uint8_t i = 0; i < DS18B20_MAX_SENSORS; i++) {
-			// Читаем ROM ID для канала 'i' из защищенной конфигурации
-			AppConfig_GetSensorROM(i, &target_rom);
-
-			// Читаем только валидно привязанный DS18B20 ROM: family code + CRC.
-			if (DS18B20_IsValidROM(&target_rom)) {
-				DS18B20_ReadResult_t read_result = DS18B20_ReadTemperature(
-						&target_rom, &current_temp);
-
-				/*
-				 * Подготовка reset не является отказом датчика.
-				 * Прекращаем обход каналов без записи ошибки.
-				 */
-				if (read_result == DS18B20_READ_CANCELLED
-						|| AppSafety_IsResetPending()) {
-					break;
-				}
-
-				if (read_result == DS18B20_READ_OK) {
-					TempMonitor_SetTemperature(i, current_temp,
-							sample_started_ms);
-				} else {
-					// Ошибка чтения DS18B20: no presence / read failure / CRC mismatch.
-					TempMonitor_SetSampleError(i, CAN_ERR_THERMO_COMM);
-				}
+		if (deferred) {
+			if (cycle.state == TEMP_CYCLE_IDLE || AppSafety_IsResetPending()) {
+				TempMonitor_ProcessCommand(&deferred_command);
+				deferred = false;
 			} else {
-				// Канал не настроен (пусто во Flash)
-				TempMonitor_ClearSample(i);
+				uint32_t wait_ms = TempMonitor_GetWaitMs(&cycle);
+
+				if (wait_ms != 0U
+						&& osDelay(TempMonitor_MsToTicks(wait_ms)) != osOK) {
+					Error_Handler();
+					return;
+				}
 			}
+		} else {
+			ThermoCommand_t command;
+			uint32_t wait_ms = TempMonitor_GetWaitMs(&cycle);
 
-			AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
+			if (osMessageQueueGet(thermo_queueHandle, &command, NULL,
+					TempMonitor_MsToTicks(wait_ms)) == osOK) {
+				if (!AppSafety_IsResetPending()
+						&& cycle.state != TEMP_CYCLE_IDLE
+						&& TempMonitor_CommandNeedsIdle(command.cmd_code)) {
+					deferred_command = command;
+					deferred = true;
+				} else {
+					TempMonitor_ProcessCommand(&command);
+				}
+			}
 		}
-
-		/*
-		 * В idle-окне ждем прикладную команду.
-		 * Thermo idle остается 2000 ms, но ожидание разбито на watchdog-safe интервалы.
-		 * Если команда пришла, helper обработает ее и сразу вернет задачу в новый цикл измерения.
-		 */
-
-		TempMonitor_ProcessPendingCommandsWithHeartbeat(
-		TEMP_MONITOR_IDLE_DELAY_MS);
 
 		AppWatchdog_Heartbeat(APP_WDG_CLIENT_TEMP_MONITOR);
 	}
 }
+

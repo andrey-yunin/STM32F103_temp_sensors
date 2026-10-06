@@ -1,6 +1,19 @@
 # STM32F103 Temperature Sensors Executor (DDS-240 Standard)
 
-## Current checkpoint — 2026-10-05
+## Current checkpoint — 2026-10-06, session closed
+
+Resume from the [Thermo handoff](../DDS-240_readme/DDS-240_eko_system/Thermo/NEXT_SESSION_PROMPT.md). T01–T15 are BUILD with partial
+bench evidence; T16/Release remains deferred. CAN, recovery and 30-minute
+results are recorded in the shared report §§33.42–33.73. Full acceptance
+is still open; one transient missing channel recovered during the long run.
+Next: watchdog R03 on the separate WatchdogTest image. Four fault hooks,
+test/production builds and host checks are ready; the user checked the build.
+Flashing the test image is not confirmed; hardware R03 has not run.
+See `tests/WATCHDOG_R03.md` in the project root. Ordinary Debug excludes hooks.
+R04–R06 and phase-specific R01 remain open. Queue changes are deferred.
+All checkpoints below are historical.
+
+## Historical checkpoint — 2026-10-05
 
 Session finished. Resume from the [Thermo handoff](../DDS-240_readme/DDS-240_eko_system/Thermo/NEXT_SESSION_PROMPT.md).
 T01–T13 are BUILD; hardware acceptance remains open. T13 preserves successful
