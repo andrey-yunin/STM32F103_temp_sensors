@@ -26,8 +26,9 @@ for path in source.rglob('*'):
         dest = output / path.relative_to(source)
         dest.parent.mkdir(parents=True, exist_ok=True)
         content = path.read_text()
-        if not args.production:
-            content = content.replace('-DDEBUG', '-DDEBUG -DAPP_WATCHDOG_TEST_HOOKS=1')
+        hook_value = 0 if args.production else 1
+        content = content.replace('-DDEBUG',
+                                  f'-DDEBUG -DAPP_WATCHDOG_TEST_HOOKS={hook_value}')
         dest.write_text(content)
 # Rebuild every object so flags from another configuration cannot leak in.
 subprocess.run(['make', '-B', '-j4', 'all'], cwd=output, env=env, check=True)

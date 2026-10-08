@@ -1,0 +1,41 @@
+{
+  "accepted_on": "2026-10-08",
+  "scope": "Thermo T01–T15 and agreed board firmware acceptance tests",
+  "status": "ACCEPTED_IN_AGREED_SCOPE",
+  "firmware_configuration": "Debug; APP_WATCHDOG_TEST_HOOKS=0",
+  "elf_sha256": "2c22a025b98d32b3a3a95150f8be1579aae5e2ecafb490201fc55e7c25d006e2",
+  "uid": "56FF6E065050654843272067",
+  "source_baseline_before_commit": "dc67fd52c24b4670730bebd14fa35dbeedb6f5ff",
+  "validation": "Existing bench results, no new tests/build/flash during closure",
+  "repeatability": {
+    "runs": 3,
+    "seconds_each": 60,
+    "full_GET_ALL": 90,
+    "total_GET_ALL": 90,
+    "E402": 0,
+    "timeout": 0,
+    "partial": 0
+  },
+  "historical_observation": "Temperature refresh/unavailability episodes retained, root cause unknown; no claim of defect correction or proven randomness",
+  "deferred": [
+    "T16/Release",
+    "queue optimization"
+  ],
+  "excluded": [
+    "whole-analyzer acceptance",
+    "hardware/metrology certification"
+  ],
+  "shared_report": "../DDS-240_readme/DDS-240_eko_system/Thermo/TEMP_SENSORS_EXECUTOR_REPORT.md §§33.98–33.100",
+  "captures_sha256": {
+    "1-wire_test.sr": "3ed356833ce1a4a834410277a070892bca4263d54ae1ef47a599249ffa0f7869",
+    "1-wire_wdg_can.pvs": "3de8a94f28ee4342d47bc974e4dc08983ac7265a6f62f392326a6978d1e45968",
+    "1-wire_wdg_temp.pvs": "31d12c99c4caf0a0a685c08daa559be55397deb5c62213e316e710d4a4c4e5e8",
+    "1-wire_wdg_busyloop.pvs": "2126e3eacd533d8afc10b84348b9ada4759c11b7c423185ade3516f05ca88b5e",
+    "1-wire_wdg_busyloop.sr": "b155fabd7dce46c5450bf06e3abd7f46c21a5b6a129f4568ee31d0b01eb29dc3",
+    "1-wire_wdg_dispatcher.pvs": "34e5035cb77a0738a2c3dd324a569087c1b307e1302f8067b43f7f38f0bab6e0",
+    "1-wire_wdg_can.sr": "f46bbf7cfeb42b76051cc045042a8289ace36e5e8b40af7f5c389f137a64635c",
+    "1-wire_wdg_dispatcher.sr": "310aa2c5b402a4ce0272a23419fb760df242be87e7c3754bea2d27988bb914f6",
+    "1-wire_test.pvs": "5757f53f3dfb658a7920756157089dad177e877daea756fe57c217042e465af4",
+    "1-wire_wdg_temp.sr": "0e6d323fa133a028ea4eaf52468aef5f677b91a99856a7493faa0bfa65135170"
+  }
+}

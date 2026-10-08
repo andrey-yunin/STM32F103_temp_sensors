@@ -220,8 +220,12 @@ void AppConfig_SetPerformerID(uint32_t id) {
 	}
 }
 
-/**
- * @brief Сохранение всех изменений из RAM во Flash (Атомарная транзакция).
+// --- Сохранение конфигурации с проверкой результатов Flash ---
+/*
+ * Config владеет записью страницы под configMutex. Как в FactoryReset HC:
+ * после отказа Unlock не стираем и не программируем, Lock проверяем всегда.
+ * false не гарантирует сохранность прежней записи: стирание могло состояться.
+ * Формат, CRC и порядок записи сохраняются; readback здесь не выполняется.
  */
 bool AppConfig_Commit(void) {
 	bool success = false;
@@ -239,7 +243,7 @@ bool AppConfig_Commit(void) {
 
 		// 3. РАЗБЛОКИРОВКА: В STM32 Flash-память защищена от случайной записи.
 		// Чтобы её поменять, нужно вызвать специальную функцию разблокировки.
-		HAL_FLASH_Unlock();
+		status = HAL_FLASH_Unlock();
 
 		// 4. ОЧИСТКА: Во Flash-памяти бит можно сменить с 1 на 0, но нельзя с 0 на 1.
 		// Чтобы записать новые данные, нужно сначала "обнулить" (стереть) всю страницу.
@@ -248,8 +252,10 @@ bool AppConfig_Commit(void) {
 		EraseInitStruct.PageAddress = APP_CONFIG_FLASH_ADDR;
 		EraseInitStruct.NbPages = 1;
 
-		// Выполняем стирание и сохраняем статус
-		status = HAL_FLASHEx_Erase(&EraseInitStruct, &PageError);
+		// --- Стирание только после успешной разблокировки ---
+		if (status == HAL_OK) {
+			status = HAL_FLASHEx_Erase(&EraseInitStruct, &PageError);
+		}
 
 		// 5. Выполняем стирание. Если оно не удалось (status != HAL_OK) — мы не пишем данные.
 		if (status == HAL_OK) {
@@ -269,7 +275,9 @@ bool AppConfig_Commit(void) {
 		}
 
 		// 7. БЛОКИРОВКА: Закрываем доступ к Flash от случайных изменений.
-		HAL_FLASH_Lock();
+		if (HAL_FLASH_Lock() != HAL_OK) {
+			status = HAL_ERROR;
+		}
 
 		// 8. ЗАВЕРШЕНИЕ: Сообщаем об успехе (status == HAL_OK).
 		success = (status == HAL_OK);

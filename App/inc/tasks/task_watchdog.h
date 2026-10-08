@@ -10,7 +10,7 @@
 
 #include <stdint.h>
 
-/* Enabled only by the separate watchdog bench build. */
+/* Штатное значение — 0; включать только для стендовых испытаний R03. */
 #ifndef APP_WATCHDOG_TEST_HOOKS
 #define APP_WATCHDOG_TEST_HOOKS 0
 #endif

@@ -1,17 +1,27 @@
 # DDS-240 shared documentation pointer
 
-## Current checkpoint — 2026-10-06, session closed
+## Accepted Thermo firmware — 2026-10-08
 
-Resume from the [Thermo handoff](../../DDS-240_readme/DDS-240_eko_system/Thermo/NEXT_SESSION_PROMPT.md). T01–T15 are BUILD with partial
-bench evidence; T16/Release remains deferred. CAN, recovery and 30-minute
-results are recorded in the shared report §§33.42–33.73. Full acceptance
-is still open; one transient missing channel recovered during the long run.
-Next: watchdog R03 on the separate WatchdogTest image. Four fault hooks,
-test/production builds and host checks are ready; the user checked the build.
-Flashing the test image is not confirmed; hardware R03 has not run.
-See `tests/WATCHDOG_R03.md` in the project root. Ordinary Debug excludes hooks.
-R04–R06 and phase-specific R01 remain open. Queue changes are deferred.
-All checkpoints below are historical.
+T01–T15 unification and the agreed firmware acceptance tests are complete.
+Accepted image: ordinary Debug, APP_WATCHDOG_TEST_HOOKS=0; ELF SHA256
+`2c22a025b98d32b3a3a95150f8be1579aae5e2ecafb490201fc55e7c25d006e2`.
+Flash commit now propagates Unlock/Lock failures, skips erase/programming
+when Unlock fails, and preserves the configuration layout and CRC.
+
+Existing validation includes Flash fault injection and real commit/reset,
+watchdog and 1-Wire safe-state captures, idle, actual processor HardFault,
+working-load measurement scheduling and final production smoke. Three
+60-second repeatability runs returned all four channels in 90/90 GET_ALL
+responses without E402, timeouts or partial replies. Earlier temperature
+observations remain historical with unknown cause; this does not claim
+that every internal sensor refresh succeeded. No additional runs assigned.
+
+Release/T16 and queue optimization remain deferred outside this acceptance.
+This is board firmware acceptance, not whole-analyzer certification.
+See the [shared acceptance report, §§33.98–33.100](../../DDS-240_readme/DDS-240_eko_system/Thermo/TEMP_SENSORS_EXECUTOR_REPORT.md),
+[unification matrix](../../DDS-240_readme/DDS-240_eko_system/Thermo/THERMO_HC_UNIFICATION_MATRIX.md)
+and the committed `tests/acceptance_20261008.json` (path from project root).
+All checkpoints below are historical; their instructions do not reopen tests.
 
 ## Historical test-plan preparation — 2026-10-06
 
